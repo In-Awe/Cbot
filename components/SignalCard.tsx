@@ -69,9 +69,9 @@ export const SignalCard: React.FC<SignalCardProps> = ({ signal, onOpenTrade, isT
                     <div className="mb-5 border-t border-gray-700 pt-4">
                         <h4 className="font-semibold mb-2 text-gray-300">Timeframe Analysis</h4>
                         <div className="space-y-1 text-xs">
-                            {Object.entries(signal.meta).map(([tf, analysis]) => (
-                                <div key={tf} className="flex justify-between items-center bg-gray-800/50 p-1.5 rounded">
-                                    <span className="font-medium text-gray-400 w-10">{tf}</span>
+                            {signal.meta.map((analysis) => (
+                                <div key={analysis.timeframe} className="flex justify-between items-center bg-gray-800/50 p-1.5 rounded">
+                                    <span className="font-medium text-gray-400 w-10">{analysis.timeframe}</span>
                                     <span className={`px-2 py-0.5 rounded text-center capitalize ${getSignalChipClasses(analysis.signal)}`}>{analysis.signal}</span>
                                     <span className="text-gray-300 w-20 text-right">Conf: {(analysis.confidence * 100).toFixed(0)}%</span>
                                 </div>

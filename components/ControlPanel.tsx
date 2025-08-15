@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from 'react';
 import type { StrategyConfig } from '../types';
 import { Card } from './ui/Card';
@@ -10,8 +9,9 @@ import { AVAILABLE_TIMEFRAMES } from '../constants';
 interface ControlPanelProps {
     initialConfig: StrategyConfig;
     onConfigChange: (config: StrategyConfig) => void;
-    onAnalyze: (config: StrategyConfig) => void;
+    onAnalyze: () => void;
     isLoading: boolean;
+    isSimulating: boolean;
 }
 
 const SectionTitle: React.FC<{ children: React.ReactNode }> = ({ children }) => (
@@ -25,12 +25,17 @@ const Label: React.FC<{ htmlFor: string, children: React.ReactNode, tooltip?: st
 );
 
 
-export const ControlPanel: React.FC<ControlPanelProps> = ({ initialConfig, onConfigChange, onAnalyze, isLoading }) => {
+export const ControlPanel: React.FC<ControlPanelProps> = ({ initialConfig, onConfigChange, onAnalyze, isLoading, isSimulating }) => {
     const [localConfig, setLocalConfig] = useState(initialConfig);
 
     useEffect(() => {
         onConfigChange(localConfig);
     }, [localConfig, onConfigChange]);
+    
+    useEffect(() => {
+        setLocalConfig(initialConfig);
+    }, [initialConfig]);
+
 
     const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         const { name, value, type } = e.target;
@@ -56,12 +61,12 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({ initialConfig, onCon
 
     const handleSubmit = (e: React.FormEvent) => {
         e.preventDefault();
-        onAnalyze(localConfig);
+        onAnalyze();
     };
 
     return (
         <Card>
-            <h2 className="text-2xl font-bold text-gray-100 mb-6">Control Panel</h2>
+            <h2 className="text-2xl font-bold text-gray-100 mb-6">Strategy Configuration</h2>
             <form onSubmit={handleSubmit} className="space-y-6">
                 <div>
                     <SectionTitle>Market & Risk</SectionTitle>
@@ -74,25 +79,26 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({ initialConfig, onCon
                                 value={localConfig.trading_pairs.join(', ')}
                                 onChange={handleStringArrayChange}
                                 placeholder="ETH/USDT, BTC/USDT"
+                                disabled={isSimulating}
                             />
                         </div>
                         <div className="grid grid-cols-2 gap-4">
                             <div>
                                 <Label htmlFor="trade_amount_usd">Trade Amount (USD)</Label>
-                                <Input id="trade_amount_usd" name="trade_amount_usd" type="number" value={localConfig.trade_amount_usd} onChange={handleInputChange} />
+                                <Input id="trade_amount_usd" name="trade_amount_usd" type="number" value={localConfig.trade_amount_usd} onChange={handleInputChange} disabled={isSimulating}/>
                             </div>
                             <div>
                                 <Label htmlFor="max_concurrent_trades">Max Open Trades</Label>
-                                <Input id="max_concurrent_trades" name="max_concurrent_trades" type="number" step="1" value={localConfig.max_concurrent_trades} onChange={handleInputChange} />
+                                <Input id="max_concurrent_trades" name="max_concurrent_trades" type="number" step="1" value={localConfig.max_concurrent_trades} onChange={handleInputChange} disabled={isSimulating}/>
                             </div>
                         </div>
                         <div>
                             <Label htmlFor="take_profit_pct">Take Profit ({localConfig.take_profit_pct}%)</Label>
-                            <Slider id="take_profit_pct" name="take_profit_pct" min="0.1" max="10" step="0.1" value={localConfig.take_profit_pct} onChange={handleInputChange} />
+                            <Slider id="take_profit_pct" name="take_profit_pct" min="0.1" max="10" step="0.1" value={localConfig.take_profit_pct} onChange={handleInputChange} disabled={isSimulating}/>
                         </div>
                         <div>
                             <Label htmlFor="stop_loss_pct">Stop Loss ({localConfig.stop_loss_pct}%)</Label>
-                            <Slider id="stop_loss_pct" name="stop_loss_pct" min="0.1" max="10" step="0.1" value={localConfig.stop_loss_pct} onChange={handleInputChange} />
+                            <Slider id="stop_loss_pct" name="stop_loss_pct" min="0.1" max="10" step="0.1" value={localConfig.stop_loss_pct} onChange={handleInputChange} disabled={isSimulating}/>
                         </div>
                     </div>
                 </div>
@@ -103,16 +109,16 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({ initialConfig, onCon
                         <div className="grid grid-cols-2 gap-4">
                              <div>
                                 <Label htmlFor="short_ma">Short MA Period</Label>
-                                <Input id="short_ma" name="short_ma" type="number" step="1" value={localConfig.short_ma} onChange={handleInputChange} />
+                                <Input id="short_ma" name="short_ma" type="number" step="1" value={localConfig.short_ma} onChange={handleInputChange} disabled={isSimulating}/>
                             </div>
                             <div>
                                 <Label htmlFor="long_ma">Long MA Period</Label>
-                                <Input id="long_ma" name="long_ma" type="number" step="1" value={localConfig.long_ma} onChange={handleInputChange} />
+                                <Input id="long_ma" name="long_ma" type="number" step="1" value={localConfig.long_ma} onChange={handleInputChange} disabled={isSimulating}/>
                             </div>
                         </div>
                         <div>
                             <Label htmlFor="rsi_period">RSI Period</Label>
-                            <Input id="rsi_period" name="rsi_period" type="number" step="1" value={localConfig.rsi_period} onChange={handleInputChange} />
+                            <Input id="rsi_period" name="rsi_period" type="number" step="1" value={localConfig.rsi_period} onChange={handleInputChange} disabled={isSimulating}/>
                         </div>
                         <div>
                            <Label htmlFor="timeframes">Analysis Timeframes</Label>
@@ -126,7 +132,8 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({ initialConfig, onCon
                                             localConfig.timeframes.includes(tf) 
                                             ? 'bg-cyan-500 text-white font-semibold' 
                                             : 'bg-gray-700 hover:bg-gray-600'
-                                        }`}
+                                        } ${isSimulating ? 'cursor-not-allowed opacity-70' : ''}`}
+                                        disabled={isSimulating}
                                     >
                                         {tf}
                                     </button>
@@ -136,8 +143,8 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({ initialConfig, onCon
                     </div>
                 </div>
                 
-                <Button type="submit" className="w-full" disabled={isLoading}>
-                    {isLoading ? 'Analyzing...' : 'Run Analysis'}
+                <Button type="submit" className="w-full" disabled={isLoading || isSimulating}>
+                    {isLoading ? 'Analyzing...' : isSimulating ? 'Simulation Active' : 'Run Manual Analysis'}
                 </Button>
             </form>
         </Card>

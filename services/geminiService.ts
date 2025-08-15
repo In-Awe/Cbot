@@ -2,12 +2,6 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import type { StrategyConfig, Signal } from '../types';
 
-if (!process.env.API_KEY) {
-    console.error("API_KEY environment variable not set.");
-}
-
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY! });
-
 const PYTHON_STRATEGY_CONTEXT = `
 from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional
@@ -65,8 +59,17 @@ const responseSchema = {
             take_profit: { type: Type.NUMBER, nullable: true },
             stop_loss: { type: Type.NUMBER, nullable: true },
             meta: {
-                type: Type.OBJECT,
-                properties: {}, // Allow any timeframe string as key
+                type: Type.ARRAY,
+                items: {
+                    type: Type.OBJECT,
+                    properties: {
+                        timeframe: { type: Type.STRING },
+                        signal: { type: Type.STRING, enum: ['bull', 'bear', 'neutral', 'error'] },
+                        confidence: { type: Type.NUMBER },
+                        error: { type: Type.STRING, nullable: true },
+                    },
+                    required: ["timeframe", "signal", "confidence"]
+                }
             },
             note: { type: Type.STRING, nullable: true },
         },
@@ -74,7 +77,13 @@ const responseSchema = {
     }
 };
 
-export const generateTradingSignals = async (config: StrategyConfig): Promise<Signal[]> => {
+export const generateTradingSignals = async (config: StrategyConfig, apiKey: string): Promise<Signal[]> => {
+    if (!apiKey) {
+        throw new Error("Gemini API key is required.");
+    }
+    
+    const ai = new GoogleGenAI({ apiKey });
+
     const prompt = `
         You are an advanced trading analysis engine that emulates the provided Python script.
         Based on the Python code context and the user's configuration below, generate plausible trading signals.
@@ -95,7 +104,7 @@ export const generateTradingSignals = async (config: StrategyConfig): Promise<Si
         2.  Simulate realistic price data and indicator calculations (MA crosses, RSI levels) across the specified \`timeframes\` to determine the \`action\` and \`confidence\`.
         3.  The \`last_price\` should be a realistic, current-like price for the given pair (e.g., ETH/USDT should be in the thousands, MATIC/USDT around $0.5-$1.0).
         4.  Calculate \`take_profit\` and \`stop_loss\` based on \`last_price\` and the config percentages.
-        5.  Populate the \`meta\` object with analysis for each timeframe, showing the signal ('bull', 'bear', 'neutral') and confidence for that specific timeframe.
+        5.  Populate the \`meta\` field as an array of objects. Each object must represent a timeframe and contain 'timeframe', 'signal', and 'confidence' keys.
         6.  The final aggregated 'action' should be 'buy' if the overall score is strongly positive, 'sell' if strongly negative, and 'hold' otherwise.
         7.  Adhere strictly to the JSON schema.
     `;
@@ -114,7 +123,6 @@ export const generateTradingSignals = async (config: StrategyConfig): Promise<Si
         const jsonText = response.text.trim();
         const signals = JSON.parse(jsonText) as Signal[];
 
-        // Post-process to handle max concurrent trades logic
         const buys = signals.filter(s => s.action === 'buy').sort((a, b) => b.confidence - a.confidence);
         const allowedBuys = config.max_concurrent_trades;
         const allowedBuyPairs = new Set(buys.slice(0, allowedBuys).map(s => s.pair));

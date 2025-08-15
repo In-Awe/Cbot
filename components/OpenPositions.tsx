@@ -1,14 +1,16 @@
-
 import React from 'react';
 import type { Trade } from '../types';
 import { Card } from './ui/Card';
+import { OpenPositionsRow } from './OpenPositionsRow';
 
 interface OpenPositionsProps {
     trades: Trade[];
     onCloseTrade: (tradeId: string) => void;
+    onConfirmTrade: (tradeId: string) => void;
+    onUpdateTrade: (tradeId: string, updates: Partial<Pick<Trade, 'entryPrice' | 'takeProfit' | 'stopLoss'>>) => void;
 }
 
-export const OpenPositions: React.FC<OpenPositionsProps> = ({ trades, onCloseTrade }) => {
+export const OpenPositions: React.FC<OpenPositionsProps> = ({ trades, onCloseTrade, onConfirmTrade, onUpdateTrade }) => {
     return (
         <Card>
             <h2 className="text-2xl font-bold text-gray-100 mb-6">Open Positions ({trades.length})</h2>
@@ -21,32 +23,25 @@ export const OpenPositions: React.FC<OpenPositionsProps> = ({ trades, onCloseTra
                     <table className="w-full text-sm text-left text-gray-300">
                         <thead className="text-xs text-gray-400 uppercase bg-gray-800/50">
                             <tr>
-                                <th scope="col" className="px-6 py-3">Pair</th>
-                                <th scope="col" className="px-6 py-3">Direction</th>
-                                <th scope="col" className="px-6 py-3">Entry Price</th>
-                                <th scope="col" className="px-6 py-3">Take Profit</th>
-                                <th scope="col" className="px-6 py-3">Stop Loss</th>
-                                <th scope="col" className="px-6 py-3">Opened At</th>
-                                <th scope="col" className="px-6 py-3"></th>
+                                <th scope="col" className="px-4 py-3">Pair</th>
+                                <th scope="col" className="px-4 py-3">Direction</th>
+                                <th scope="col" className="px-4 py-3">Status</th>
+                                <th scope="col" className="px-4 py-3">Entry Price</th>
+                                <th scope="col" className="px-4 py-3">Take Profit</th>
+                                <th scope="col" className="px-4 py-3">Stop Loss</th>
+                                <th scope="col" className="px-4 py-3">Opened At</th>
+                                <th scope="col" className="px-4 py-3 text-right">Actions</th>
                             </tr>
                         </thead>
                         <tbody>
                             {trades.map(trade => (
-                                <tr key={trade.id} className="border-b border-gray-700 hover:bg-gray-800/40">
-                                    <th scope="row" className="px-6 py-4 font-medium text-white whitespace-nowrap">{trade.pair}</th>
-                                    <td className={`px-6 py-4 font-semibold ${trade.direction === 'LONG' ? 'text-green-400' : 'text-red-400'}`}>
-                                        {trade.direction}
-                                    </td>
-                                    <td className="px-6 py-4 font-mono">${trade.entryPrice.toFixed(4)}</td>
-                                    <td className="px-6 py-4 font-mono text-green-400">${trade.takeProfit.toFixed(4)}</td>
-                                    <td className="px-6 py-4 font-mono text-red-400">${trade.stopLoss.toFixed(4)}</td>
-                                    <td className="px-6 py-4">{trade.openedAt.toLocaleString()}</td>
-                                    <td className="px-6 py-4 text-right">
-                                        <button onClick={() => onCloseTrade(trade.id)} className="font-medium text-red-500 hover:underline">
-                                            Close
-                                        </button>
-                                    </td>
-                                </tr>
+                                <OpenPositionsRow
+                                    key={trade.id}
+                                    trade={trade}
+                                    onCloseTrade={onCloseTrade}
+                                    onConfirmTrade={onConfirmTrade}
+                                    onUpdateTrade={onUpdateTrade}
+                                />
                             ))}
                         </tbody>
                     </table>

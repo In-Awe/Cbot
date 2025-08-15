@@ -1,4 +1,3 @@
-
 export interface StrategyConfig {
     exchange: string;
     trading_pairs: string[];
@@ -15,9 +14,10 @@ export interface StrategyConfig {
 }
 
 export interface TimeframeAnalysis {
+    timeframe: string;
     signal: 'bull' | 'bear' | 'neutral' | 'error';
     confidence: number;
-    weight: number;
+    weight?: number;
     error?: string;
 }
 
@@ -29,9 +29,7 @@ export interface Signal {
     last_price: number | null;
     take_profit: number | null;
     stop_loss: number | null;
-    meta: {
-        [timeframe: string]: TimeframeAnalysis;
-    };
+    meta: TimeframeAnalysis[];
     note?: string;
 }
 
@@ -43,4 +41,25 @@ export interface Trade {
     openedAt: Date;
     takeProfit: number;
     stopLoss: number;
+    status: 'pending' | 'active';
+}
+
+export interface AnalysisLogEntry {
+    id: string;
+    timestamp: Date;
+    pair: string;
+    price: number;
+    action: 'buy' | 'sell' | 'hold';
+    confidence: number;
+    analysisSummary: string;
+}
+
+export type SimulationStatus = 'stopped' | 'running' | 'paused';
+
+export interface TerminalLogEntry {
+    id: number;
+    timestamp: Date;
+    type: 'info' | 'request' | 'response' | 'error';
+    message: string;
+    data?: string; // Optional stringified JSON data
 }
