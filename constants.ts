@@ -3,7 +3,7 @@ import type { StrategyConfig } from './types';
 
 export const DEFAULT_STRATEGY_CONFIG: StrategyConfig = {
     exchange: "Binance",
-    trading_pairs: ["ZORA/USDT", "MATIC/USDT", "LINK/USDT", "ARB/USDT", "ETH/USDT"],
+    trading_pairs: ["ETH/USDT"],
     trade_amount_usd: 20.0,
     max_concurrent_trades: 2,
     take_profit_pct: 3.0,

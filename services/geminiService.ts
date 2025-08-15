@@ -1,4 +1,3 @@
-
 import { GoogleGenAI, Type } from "@google/genai";
 import type { StrategyConfig, Signal, Trade } from '../types';
 
@@ -75,7 +74,7 @@ const responseSchema = {
             suggested_take_profit_pct: { type: Type.NUMBER, nullable: true },
             suggested_stop_loss_pct: { type: Type.NUMBER, nullable: true },
         },
-        required: ["pair", "action", "confidence", "score", "last_price", "take_profit", "stop_loss", "meta"]
+        required: ["pair", "action", "confidence", "score", "meta"]
     }
 };
 
@@ -94,10 +93,8 @@ const withRetry = async <T>(fn: () => Promise<T>, retries = 3, initialDelay = 10
             const errorString = String(error);
             const isRateLimitError = errorString.includes("429") || errorString.toLowerCase().includes("quota");
             
-            // Exponential backoff
             const backoff = initialDelay * Math.pow(2, attempt) + Math.random() * 1000;
             
-            // Use a much longer delay for rate limit errors
             const waitTime = isRateLimitError ? Math.max(backoff, 5000) : backoff;
 
             console.warn(
@@ -109,7 +106,12 @@ const withRetry = async <T>(fn: () => Promise<T>, retries = 3, initialDelay = 10
     }
 };
 
-export const generateTradingSignals = async (config: StrategyConfig, apiKey: string, tradeHistory: Trade[]): Promise<Signal[]> => {
+export const generateTradingSignals = async (
+    config: StrategyConfig, 
+    apiKey: string, 
+    tradeHistory: Trade[],
+    livePrices: Record<string, number> | null
+): Promise<Signal[]> => {
     if (!apiKey) {
         throw new Error("Gemini API key is required.");
     }
@@ -117,7 +119,7 @@ export const generateTradingSignals = async (config: StrategyConfig, apiKey: str
     const ai = new GoogleGenAI({ apiKey });
 
     const summarizedHistory = tradeHistory
-        .slice(0, 50) // Take last 50 trades
+        .slice(0, 50)
         .map(t => ({
             pair: t.pair,
             direction: t.direction,
@@ -144,6 +146,11 @@ export const generateTradingSignals = async (config: StrategyConfig, apiKey: str
         ${JSON.stringify(config, null, 2)}
         \`\`\`
 
+        Live Market Prices (use these as the ground truth for your analysis):
+        \`\`\`json
+        ${JSON.stringify(livePrices, null, 2)}
+        \`\`\`
+
         Trade History (Your recent performance, learn from this):
         \`\`\`json
         ${JSON.stringify(summarizedHistory, null, 2)}
@@ -154,11 +161,10 @@ export const generateTradingSignals = async (config: StrategyConfig, apiKey: str
         2.  **Adapt and Calibrate:** Based on your analysis, you MUST adjust your internal strategy. If your past 'buy' signals with >80% confidence for MATIC/USDT have been losing, you must lower your confidence for similar signals in the future or even issue a 'hold'. Conversely, if a pattern is consistently profitable, increase your confidence when you see it again.
         2.5. **Optimize Risk Parameters:** Based on your analysis of volatility and past performance for a specific pair, if you determine the user's configured Take Profit or Stop Loss percentages are suboptimal, you may suggest improved values in the 'suggested_take_profit_pct' and 'suggested_stop_loss_pct' fields. Only provide suggestions if you have high confidence that they will improve profitability.
         3.  **Generate New Signals:** For each pair in the user's \`trading_pairs\`, generate a new signal object based on your adapted strategy.
-        4.  **Simulate Realism:** Generate plausible, continuous price data. The \`last_price\` must be realistic for each pair.
-        5.  **Calculate Risk:** Calculate \`take_profit\` and \`stop_loss\` based on \`last_price\` and the config percentages.
-        6.  **Provide Detailed Rationale:** Populate the \`meta\` field with your analysis for each timeframe.
-        7.  **Factor in Risk/Reward:** Your final \`confidence\` score must reflect the risk/reward ratio from \`take_profit_pct\` and \`stop_loss_pct\`. A wider stop-loss should decrease confidence.
-        8.  **Output JSON Only:** The final output must be ONLY a valid JSON array conforming to the schema. No explanations.
+        4.  **Calculate Risk:** Calculate \`take_profit\` and \`stop_loss\` based on the provided live \`last_price\` and the config percentages.
+        5.  **Provide Detailed Rationale:** Populate the \`meta\` field with your analysis for each timeframe. The \`last_price\` in your response for each signal MUST MATCH the price provided in the "Live Market Prices" section.
+        6.  **Factor in Risk/Reward:** Your final \`confidence\` score must reflect the risk/reward ratio from \`take_profit_pct\` and \`stop_loss_pct\`. A wider stop-loss should decrease confidence.
+        7.  **Output JSON Only:** The final output must be ONLY a valid JSON array conforming to the schema. No explanations.
     `;
 
     const generate = () => ai.models.generateContent({
@@ -173,21 +179,8 @@ export const generateTradingSignals = async (config: StrategyConfig, apiKey: str
 
     try {
         const response = await withRetry(generate);
-
         const jsonText = response.text.trim();
-        const signals = JSON.parse(jsonText) as Signal[];
-
-        // This logic is a safeguard, but primary control should be via open trade checks in App.tsx
-        const buys = signals.filter(s => s.action === 'buy').sort((a, b) => b.confidence - a.confidence);
-        const allowedBuys = config.max_concurrent_trades;
-        const allowedBuyPairs = new Set(buys.slice(0, allowedBuys).map(s => s.pair));
-
-        return signals.map(s => {
-            if (s.action === 'buy' && !allowedBuyPairs.has(s.pair)) {
-                return { ...s, action: 'hold', note: 'Deferred due to max_concurrent_trades limit' };
-            }
-            return s;
-        });
+        return JSON.parse(jsonText) as Signal[];
 
     } catch (e) {
         console.error("Error generating signals from Gemini API after retries:", e);

@@ -1,4 +1,3 @@
-
 export interface StrategyConfig {
     exchange: string;
     trading_pairs: string[];
@@ -67,7 +66,28 @@ export type SimulationStatus = 'stopped' | 'running' | 'paused';
 export interface TerminalLogEntry {
     id: number;
     timestamp: Date;
-    type: 'info' | 'request' | 'response' | 'error';
+    type: 'info' | 'request' | 'response' | 'error' | 'warn';
     message: string;
     data?: string; // Optional stringified JSON data
+}
+
+export interface PriceHistoryLogEntry {
+    id: number;
+    timestamp: Date;
+    pair: string;
+    price: number;
+}
+
+export interface PredictionAccuracyRecord {
+    id: string;
+    pair: string;
+    timeframe: string;
+    predictedSignal: 'bull' | 'bear';
+    predictionTime: number;
+    startPrice: number;
+    status: 'pending' | 'resolved';
+    endTime?: number;
+    endPrice?: number;
+    outcome?: 'UP' | 'DOWN' | 'SIDEWAYS';
+    success?: boolean;
 }

@@ -143,8 +143,8 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({ initialConfig, onCon
                     </div>
                 </div>
                 
-                <Button type="submit" className="w-full" disabled={isLoading || isSimulating}>
-                    {isLoading ? 'Analyzing...' : isSimulating ? 'Simulation Active' : 'Run Manual Analysis'}
+                <Button type="submit" className="w-full" variant="secondary">
+                    Generate Performance Report
                 </Button>
             </form>
         </Card>
