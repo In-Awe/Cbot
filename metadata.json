@@ -1,0 +1,5 @@
+{
+  "name": "Gemini Trading Strategy Dashboard",
+  "description": "A web-based control panel and dashboard to configure and visualize trading signals from an advanced analysis strategy, powered by the Gemini API to simulate signal generation.",
+  "requestFramePermissions": []
+}
