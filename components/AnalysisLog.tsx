@@ -1,9 +1,12 @@
+
 import React from 'react';
-import type { AnalysisLogEntry } from '../types';
+import type { AnalysisLogEntry, TimeframeAnalysis } from '../types';
 import { Card } from './ui/Card';
+import { DownloadIcon } from './icons/DownloadIcon';
 
 interface AnalysisLogProps {
     logEntries: AnalysisLogEntry[];
+    onExport: () => void;
 }
 
 const getActionColor = (action: string) => {
@@ -12,13 +15,32 @@ const getActionColor = (action: string) => {
     return 'text-gray-400';
 }
 
-export const AnalysisLog: React.FC<AnalysisLogProps> = ({ logEntries }) => {
+const getSignalChipClasses = (signal: TimeframeAnalysis['signal']) => {
+    switch (signal) {
+        case 'bull': return 'bg-green-500/20 text-green-300';
+        case 'bear': return 'bg-red-500/20 text-red-300';
+        default: return 'bg-gray-500/20 text-gray-300';
+    }
+}
+
+export const AnalysisLog: React.FC<AnalysisLogProps> = ({ logEntries, onExport }) => {
     return (
         <Card>
-            <h2 className="text-2xl font-bold text-gray-100 mb-6">Live Analysis Log</h2>
+             <div className="flex justify-between items-center mb-6">
+                <h2 className="text-2xl font-bold text-gray-100">Live Analysis Log</h2>
+                <button 
+                    onClick={onExport}
+                    disabled={logEntries.length === 0}
+                    className="flex items-center gap-2 px-3 py-1.5 text-xs font-semibold text-gray-300 bg-gray-700/50 hover:bg-gray-700 rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                    <DownloadIcon />
+                    <span>Download CSV</span>
+                </button>
+            </div>
+            
             {logEntries.length === 0 ? (
                 <div className="text-center py-10">
-                    <p className="text-gray-400">Connect to the Binance Live Feed to see real-time analysis.</p>
+                    <p className="text-gray-400">Run a simulation or manual analysis to see the log here.</p>
                 </div>
             ) : (
                 <div className="overflow-x-auto max-h-96 overflow-y-auto">
@@ -30,7 +52,7 @@ export const AnalysisLog: React.FC<AnalysisLogProps> = ({ logEntries }) => {
                                 <th scope="col" className="px-4 py-3">Price</th>
                                 <th scope="col" className="px-4 py-3">Action</th>
                                 <th scope="col" className="px-4 py-3">Confidence</th>
-                                <th scope="col" className="px-4 py-3">Analysis</th>
+                                <th scope="col" className="px-4 py-3 min-w-[200px]">Timeframe Details</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -43,7 +65,15 @@ export const AnalysisLog: React.FC<AnalysisLogProps> = ({ logEntries }) => {
                                         {entry.action}
                                     </td>
                                     <td className="px-4 py-3">{(entry.confidence * 100).toFixed(0)}%</td>
-                                    <td className="px-4 py-3 text-xs text-gray-400">{entry.analysisSummary}</td>
+                                    <td className="px-4 py-3">
+                                        <div className="flex flex-wrap gap-1">
+                                            {entry.meta?.map(m => (
+                                                <span key={m.timeframe} className={`px-1.5 py-0.5 text-[10px] rounded ${getSignalChipClasses(m.signal)}`}>
+                                                    {m.timeframe}: {(m.confidence * 100).toFixed(0)}%
+                                                </span>
+                                            ))}
+                                        </div>
+                                    </td>
                                 </tr>
                             ))}
                         </tbody>

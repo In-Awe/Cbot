@@ -1,3 +1,4 @@
+
 export interface StrategyConfig {
     exchange: string;
     trading_pairs: string[];
@@ -41,7 +42,10 @@ export interface Trade {
     openedAt: Date;
     takeProfit: number;
     stopLoss: number;
-    status: 'pending' | 'active';
+    status: 'pending' | 'active' | 'closed';
+    exitPrice?: number;
+    closedAt?: Date;
+    pnl?: number;
 }
 
 export interface AnalysisLogEntry {
@@ -51,7 +55,7 @@ export interface AnalysisLogEntry {
     price: number;
     action: 'buy' | 'sell' | 'hold';
     confidence: number;
-    analysisSummary: string;
+    meta: TimeframeAnalysis[];
 }
 
 export type SimulationStatus = 'stopped' | 'running' | 'paused';

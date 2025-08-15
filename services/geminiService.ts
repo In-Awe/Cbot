@@ -1,4 +1,3 @@
-
 import { GoogleGenAI, Type } from "@google/genai";
 import type { StrategyConfig, Signal } from '../types';
 
@@ -102,11 +101,13 @@ export const generateTradingSignals = async (config: StrategyConfig, apiKey: str
         Instructions:
         1.  For each trading pair in \`trading_pairs\`, generate a signal object.
         2.  Simulate realistic price data and indicator calculations (MA crosses, RSI levels) across the specified \`timeframes\` to determine the \`action\` and \`confidence\`.
-        3.  The \`last_price\` should be a realistic, current-like price for the given pair (e.g., ETH/USDT should be in the thousands, MATIC/USDT around $0.5-$1.0).
-        4.  Calculate \`take_profit\` and \`stop_loss\` based on \`last_price\` and the config percentages.
-        5.  Populate the \`meta\` field as an array of objects. Each object must represent a timeframe and contain 'timeframe', 'signal', and 'confidence' keys.
-        6.  The final aggregated 'action' should be 'buy' if the overall score is strongly positive, 'sell' if strongly negative, and 'hold' otherwise.
-        7.  Adhere strictly to the JSON schema.
+        3.  Generate prices as if they are part of a continuous, plausible historical data stream to ensure realism.
+        4.  The \`last_price\` should be a realistic, current-like price for the given pair (e.g., ETH/USDT should be in the thousands, MATIC/USDT around $0.5-$1.0).
+        5.  Calculate \`take_profit\` and \`stop_loss\` based on \`last_price\` and the config percentages.
+        6.  Populate the \`meta\` field as an array of objects. Each object must represent a timeframe and contain 'timeframe', 'signal', and 'confidence' keys.
+        7.  The final aggregated 'action' should be 'buy' if the overall score is strongly positive, 'sell' if strongly negative, and 'hold' otherwise.
+        8.  **Crucially, you must factor the user's \`take_profit_pct\` and \`stop_loss_pct\` into your final \`confidence\` score. A higher take-profit percentage relative to the stop-loss is riskier and should result in a lower confidence score for that signal, and vice-versa.**
+        9.  Adhere strictly to the JSON schema.
     `;
 
     try {

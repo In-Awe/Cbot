@@ -1,5 +1,5 @@
 
-import React from 'react';
+import React, { useState } from 'react';
 import type { Signal } from '../types';
 import { SignalCard } from './SignalCard';
 import { Card } from './ui/Card';
@@ -7,8 +7,9 @@ import { Card } from './ui/Card';
 interface SignalDashboardProps {
     signals: Signal[];
     isLoading: boolean;
-    onOpenTrade: (signal: Signal) => void;
+    onOpenTimeframeTrade: (pair: string, direction: 'LONG' | 'SHORT') => void;
     openTradePairs: string[];
+    tradeAmountUSD: number;
 }
 
 const SkeletonCard: React.FC = () => (
@@ -27,7 +28,11 @@ const SkeletonCard: React.FC = () => (
 );
 
 
-export const SignalDashboard: React.FC<SignalDashboardProps> = ({ signals, isLoading, onOpenTrade, openTradePairs }) => {
+export const SignalDashboard: React.FC<SignalDashboardProps> = ({ signals, isLoading, onOpenTimeframeTrade, openTradePairs, tradeAmountUSD }) => {
+    const [areDetailsExpanded, setAreDetailsExpanded] = useState(false);
+    
+    const handleToggleDetails = () => setAreDetailsExpanded(prev => !prev);
+    
     return (
         <Card>
             <h2 className="text-2xl font-bold text-gray-100 mb-6">Signal Dashboard</h2>
@@ -49,8 +54,11 @@ export const SignalDashboard: React.FC<SignalDashboardProps> = ({ signals, isLoa
                         <SignalCard 
                             key={signal.pair} 
                             signal={signal} 
-                            onOpenTrade={onOpenTrade}
+                            onOpenTimeframeTrade={onOpenTimeframeTrade}
                             isTradeOpen={openTradePairs.includes(signal.pair)}
+                            isExpanded={areDetailsExpanded}
+                            onToggleDetails={handleToggleDetails}
+                            tradeAmountUSD={tradeAmountUSD}
                         />
                     ))}
                 </div>
