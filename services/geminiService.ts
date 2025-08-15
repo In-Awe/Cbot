@@ -1,5 +1,6 @@
+
 import { GoogleGenAI, Type } from "@google/genai";
-import type { StrategyConfig, Signal, Trade } from '../types';
+import type { StrategyConfig, Signal, Trade, PriceHistoryLogEntry } from '../types';
 
 const PYTHON_STRATEGY_CONTEXT = `
 from dataclasses import dataclass, field
@@ -110,7 +111,8 @@ export const generateTradingSignals = async (
     config: StrategyConfig, 
     apiKey: string, 
     tradeHistory: Trade[],
-    livePrices: Record<string, number> | null
+    livePrices: Record<string, number> | null,
+    priceHistory: Record<string, PriceHistoryLogEntry[]>
 ): Promise<Signal[]> => {
     if (!apiKey) {
         throw new Error("Gemini API key is required.");
@@ -132,6 +134,16 @@ export const generateTradingSignals = async (
                 .join(', ')
         }));
 
+    const priceHistoryForPrompt = config.trading_pairs.reduce((acc, pair) => {
+        if (priceHistory[pair]) {
+            acc[pair] = priceHistory[pair].slice(0, 50).map(entry => ({
+                t: new Date(entry.timestamp).toLocaleTimeString('en-US', { hour12: false }),
+                p: entry.price.toFixed(4)
+            })).reverse();
+        }
+        return acc;
+    }, {} as Record<string, any>);
+
     const prompt = `
         You are an advanced, self-improving trading analysis engine. Your primary goal is to generate profitable trading signals by learning from your past performance.
         You emulate the provided Python script but with a crucial feedback loop.
@@ -151,6 +163,11 @@ export const generateTradingSignals = async (
         ${JSON.stringify(livePrices, null, 2)}
         \`\`\`
 
+        Recent Price History (to understand recent volatility and trends for each pair):
+        \`\`\`json
+        ${JSON.stringify(priceHistoryForPrompt, null, 2)}
+        \`\`\`
+
         Trade History (Your recent performance, learn from this):
         \`\`\`json
         ${JSON.stringify(summarizedHistory, null, 2)}
@@ -158,7 +175,8 @@ export const generateTradingSignals = async (
 
         **Core Instructions & Feedback Loop:**
         1.  **Analyze Your History:** Carefully review the provided \`Trade History\`. Identify patterns. Are high-confidence signals for certain pairs consistently failing? Are specific timeframe combinations (e.g., '1h:bull' with '5m:bull') leading to wins?
-        2.  **Adapt and Calibrate:** Based on your analysis, you MUST adjust your internal strategy. If your past 'buy' signals with >80% confidence for MATIC/USDT have been losing, you must lower your confidence for similar signals in the future or even issue a 'hold'. Conversely, if a pattern is consistently profitable, increase your confidence when you see it again.
+        1.5. **Analyze Price History:** Use the 'Recent Price History' for the specific pair you are analyzing to gauge recent momentum, volatility, and identify micro-trends. This is crucial context for your technical indicator analysis.
+        2.  **Adapt and Calibrate:** Based on your analysis of both trade and price history, you MUST adjust your internal strategy. If your past 'buy' signals with >80% confidence for MATIC/USDT have been losing, you must lower your confidence for similar signals in the future or even issue a 'hold'. Conversely, if a pattern is consistently profitable, increase your confidence when you see it again.
         2.5. **Optimize Risk Parameters:** Based on your analysis of volatility and past performance for a specific pair, if you determine the user's configured Take Profit or Stop Loss percentages are suboptimal, you may suggest improved values in the 'suggested_take_profit_pct' and 'suggested_stop_loss_pct' fields. Only provide suggestions if you have high confidence that they will improve profitability.
         3.  **Generate New Signals:** For each pair in the user's \`trading_pairs\`, generate a new signal object based on your adapted strategy.
         4.  **Calculate Risk:** Calculate \`take_profit\` and \`stop_loss\` based on the provided live \`last_price\` and the config percentages.

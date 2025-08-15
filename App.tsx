@@ -40,7 +40,10 @@ const App: React.FC = () => {
     });
     
     const [predictionRecords, setPredictionRecords] = useState<PredictionAccuracyRecord[]>([]);
-    const [priceHistoryLog, setPriceHistoryLog] = useState<PriceHistoryLogEntry[]>([]);
+    const [priceHistoryLog, setPriceHistoryLog] = useState<Record<string, PriceHistoryLogEntry[]>>(() => {
+        const saved = localStorage.getItem('priceHistoryLogs');
+        return saved ? JSON.parse(saved) : {};
+    });
     const [livePrices, setLivePrices] = useState<Record<string, number>>({});
 
     const [isLoading, setIsLoading] = useState<boolean>(false);
@@ -73,6 +76,7 @@ const App: React.FC = () => {
 
     useEffect(() => { localStorage.setItem('openTrades', JSON.stringify(openTrades)); }, [openTrades]);
     useEffect(() => { localStorage.setItem('closedTrades', JSON.stringify(closedTrades)); }, [closedTrades]);
+    useEffect(() => { localStorage.setItem('priceHistoryLogs', JSON.stringify(priceHistoryLog)); }, [priceHistoryLog]);
 
 
     const addLog = useCallback((message: string, type: TerminalLogEntry['type'] = 'info', data?: any) => {
@@ -177,10 +181,15 @@ const App: React.FC = () => {
             const prices = await fetchLivePrices(currentConfig.trading_pairs, '');
             if (Object.keys(prices).length > 0) {
                 setLivePrices(prices);
-                const priceLogEntries: PriceHistoryLogEntry[] = Object.entries(prices).map(([pair, price]) => ({
-                    id: Date.now() + Math.random(), timestamp: new Date(), pair, price
-                }));
-                setPriceHistoryLog(prev => [...priceLogEntries, ...prev].slice(0, 500));
+                setPriceHistoryLog(prev => {
+                    const newLogs = { ...prev };
+                    Object.entries(prices).forEach(([pair, price]) => {
+                        const newEntry: PriceHistoryLogEntry = { id: Date.now() + Math.random(), timestamp: new Date(), pair, price };
+                        const pairHistory = prev[pair] ? [newEntry, ...prev[pair]] : [newEntry];
+                        newLogs[pair] = pairHistory.slice(0, 500);
+                    });
+                    return newLogs;
+                });
                 return true;
             }
              return false;
@@ -237,7 +246,7 @@ const App: React.FC = () => {
 
             // 3. Generate signals from Gemini
             addLog('Requesting new signals from Gemini API...', 'request', { pairs: currentConfig.trading_pairs });
-            const generatedSignals = await generateTradingSignals(currentConfig, currentGeminiApiKey, closedTradesRef.current, currentPrices);
+            const generatedSignals = await generateTradingSignals(currentConfig, currentGeminiApiKey, closedTradesRef.current, currentPrices, priceHistoryLog);
             addLog('Received response from Gemini API.', 'response', generatedSignals);
             
             const signalsWithLivePrices = generatedSignals.map(signal => ({ ...signal, last_price: currentPrices[signal.pair] || signal.last_price }));
@@ -312,7 +321,7 @@ const App: React.FC = () => {
             setIsLoading(false);
             isAnalysisRunning.current = false;
         }
-    }, [addLog, showNotification, closeTrade, simulationStatus, resolvePredictions]);
+    }, [addLog, showNotification, closeTrade, simulationStatus, resolvePredictions, priceHistoryLog]);
     
     const handleManualPriceFetch = async () => {
         if (!isBinanceConnected) {
@@ -360,7 +369,7 @@ const App: React.FC = () => {
         setIsBinanceConnected(false);
         setLivePrices({});
         setSignals([]);
-        setPriceHistoryLog([]);
+        setPriceHistoryLog({});
         addLog('Binance API Disconnected. Price feed stopped.', 'info');
     }, [addLog, simulationStatus]);
     
@@ -455,9 +464,16 @@ const App: React.FC = () => {
         downloadCsv(arrayToCsv(logsToExport.map(({ id, ...rest }) => rest), columns), `terminal-log-${new Date().toISOString().slice(0,10)}.csv`);
     }, [terminalLog]);
     
-    const handleExportPriceHistory = useCallback(() => {
+    const handleExportPriceHistory = useCallback((pair: string) => {
+        const logToExport = priceHistoryLog[pair];
+        if (!logToExport || logToExport.length === 0) {
+            alert(`No price history available to export for ${pair}.`);
+            return;
+        }
         const columns = [ { key: 'timestamp', label: 'Timestamp' }, { key: 'pair', label: 'Pair' }, { key: 'price', label: 'Price' } ];
-        downloadCsv(arrayToCsv(priceHistoryLog, columns), `price-history-${new Date().toISOString().slice(0,10)}.csv`);
+        const reversedLog = [...logToExport].reverse();
+        const filename = `price-history-${pair.replace('/', '_')}-${new Date().toISOString().slice(0,10)}.csv`;
+        downloadCsv(arrayToCsv(reversedLog, columns), filename);
     }, [priceHistoryLog]);
     
     const handleExportPredictionAccuracy = useCallback(() => {
@@ -527,7 +543,12 @@ const App: React.FC = () => {
                         <OpenPositions openTrades={openTrades} closedTrades={closedTrades} onCloseTrade={handleCloseTrade} onConfirmTrade={handleConfirmTrade} onUpdateTrade={handleUpdateTrade} />
                         <PredictionAccuracy records={predictionRecords} />
                         <AnalysisLog logEntries={analysisLog} onExport={handleExportAnalysisLog} />
-                        <PriceHistoryLog logEntries={priceHistoryLog} onExport={handleExportPriceHistory} onFetchPrices={handleManualPriceFetch} />
+                        <PriceHistoryLog 
+                            trading_pairs={config.trading_pairs}
+                            logData={priceHistoryLog} 
+                            onExport={handleExportPriceHistory} 
+                            onFetchPrices={handleManualPriceFetch} 
+                        />
                     </div>
                 </div>
             </main>
