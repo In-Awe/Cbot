@@ -7,6 +7,7 @@ interface ScoreboardProps {
     openTrades: Trade[];
     closedTrades: Trade[];
     signals: Signal[];
+    tradeAmountUSD: number;
 }
 
 const PnlCard: React.FC<{ title: string; value: number; className?: string }> = ({ title, value, className }) => {
@@ -23,7 +24,7 @@ const PnlCard: React.FC<{ title: string; value: number; className?: string }> = 
     );
 };
 
-export const Scoreboard: React.FC<ScoreboardProps> = ({ openTrades, closedTrades, signals }) => {
+export const Scoreboard: React.FC<ScoreboardProps> = ({ openTrades, closedTrades, signals, tradeAmountUSD }) => {
     const realizedPnl = useMemo(() => {
         return closedTrades.reduce((acc, trade) => acc + (trade.pnl || 0), 0);
     }, [closedTrades]);
@@ -35,17 +36,17 @@ export const Scoreboard: React.FC<ScoreboardProps> = ({ openTrades, closedTrades
             .filter(trade => trade.status === 'active')
             .reduce((acc, trade) => {
                 const currentPrice = signalsMap.get(trade.pair);
-                if (!currentPrice) return acc;
+                if (!currentPrice || trade.entryPrice <= 0) return acc;
 
                 let pnl = 0;
                 if (trade.direction === 'LONG') {
-                    pnl = (currentPrice - trade.entryPrice) * (20 / trade.entryPrice); // Assuming trade amount for calculation
+                    pnl = (currentPrice - trade.entryPrice) * (tradeAmountUSD / trade.entryPrice);
                 } else {
-                    pnl = (trade.entryPrice - currentPrice) * (20 / trade.entryPrice);
+                    pnl = (trade.entryPrice - currentPrice) * (tradeAmountUSD / trade.entryPrice);
                 }
                 return acc + pnl;
             }, 0);
-    }, [openTrades, signals]);
+    }, [openTrades, signals, tradeAmountUSD]);
     
     const totalPnl = realizedPnl + unrealizedPnl;
 

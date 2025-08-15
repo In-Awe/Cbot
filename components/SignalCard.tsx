@@ -87,6 +87,21 @@ export const SignalCard: React.FC<SignalCardProps> = ({ signal, onOpenTimeframeT
                         </div>
                     </div>
                     {signal.note && <p className="text-xs text-yellow-500/80 pt-2 italic">Note: {signal.note}</p>}
+                    
+                    {(signal.suggested_take_profit_pct || signal.suggested_stop_loss_pct) && (
+                        <div className="border-t border-cyan-500/20 pt-3 mt-3 space-y-1">
+                             {signal.suggested_take_profit_pct && (
+                                <p className="text-xs text-cyan-300/90 text-center">
+                                    AI Suggests TP: <span className="font-bold">{signal.suggested_take_profit_pct.toFixed(2)}%</span>
+                                </p>
+                            )}
+                             {signal.suggested_stop_loss_pct && (
+                                <p className="text-xs text-cyan-300/90 text-center">
+                                    AI Suggests SL: <span className="font-bold">{signal.suggested_stop_loss_pct.toFixed(2)}%</span>
+                                </p>
+                            )}
+                        </div>
+                    )}
                 </div>
             </div>
 

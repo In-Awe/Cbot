@@ -32,6 +32,8 @@ export interface Signal {
     stop_loss: number | null;
     meta: TimeframeAnalysis[];
     note?: string;
+    suggested_take_profit_pct?: number;
+    suggested_stop_loss_pct?: number;
 }
 
 export interface Trade {
@@ -46,6 +48,8 @@ export interface Trade {
     exitPrice?: number;
     closedAt?: Date;
     pnl?: number;
+    initialConfidence?: number;
+    initialSignalMeta?: TimeframeAnalysis[];
 }
 
 export interface AnalysisLogEntry {

@@ -13,7 +13,7 @@ import type { StrategyConfig, Signal, Trade, AnalysisLogEntry, TerminalLogEntry,
 import { generateTradingSignals } from './services/geminiService';
 import { DEFAULT_STRATEGY_CONFIG } from './constants';
 
-const SIMULATION_INTERVAL = 30000; // 30 seconds for a new "tick"
+const SIMULATION_INTERVAL = 60000; // 60 seconds to respect API rate limits
 
 // Custom hook to get the previous value of a prop or state
 function usePrevious<T>(value: T): T | undefined {
@@ -46,9 +46,14 @@ const App: React.FC = () => {
     const intervalRef = useRef<number | null>(null);
     const configRef = useRef(config);
     const apiKeyRef = useRef(apiKey);
+    const openTradesRef = useRef(openTrades);
+    const closedTradesRef = useRef(closedTrades);
+    const isAnalysisRunning = useRef(false);
 
     useEffect(() => { configRef.current = config; }, [config]);
     useEffect(() => { apiKeyRef.current = apiKey; }, [apiKey]);
+    useEffect(() => { openTradesRef.current = openTrades; }, [openTrades]);
+    useEffect(() => { closedTradesRef.current = closedTrades; }, [closedTrades]);
 
     useEffect(() => {
         localStorage.setItem('openTrades', JSON.stringify(openTrades));
@@ -85,7 +90,7 @@ const App: React.FC = () => {
                 addLog(`Strategy config updated: ${changes.join('; ')}`, 'info');
             }
         }
-    }, [config, prevConfig, addLog]);
+    }, [config, addLog]);
 
     const showNotification = useCallback((title: string, options: NotificationOptions & { pair?: string }) => {
         if (!('Notification' in window) || Notification.permission !== 'granted') {
@@ -108,11 +113,12 @@ const App: React.FC = () => {
     }, []);
 
     const closeTrade = useCallback((trade: Trade, exitPrice: number, reason: string) => {
+        const tradeAmount = configRef.current.trade_amount_usd;
         let pnl = 0;
         if (trade.direction === 'LONG') {
-            pnl = (exitPrice - trade.entryPrice) * (config.trade_amount_usd / trade.entryPrice);
+            pnl = (exitPrice - trade.entryPrice) * (tradeAmount / trade.entryPrice);
         } else { // SHORT
-            pnl = (trade.entryPrice - exitPrice) * (config.trade_amount_usd / trade.entryPrice);
+            pnl = (trade.entryPrice - exitPrice) * (tradeAmount / trade.entryPrice);
         }
 
         const closedTrade: Trade = {
@@ -130,14 +136,25 @@ const App: React.FC = () => {
         showNotification(`Position Closed: ${trade.pair}`, { body: `${reason} for a ${pnlString}.`, pair: trade.pair, icon: '/vite.svg' });
         addLog(`Position for ${trade.pair} closed. Reason: ${reason}. PNL: $${pnl.toFixed(2)}`, 'info');
 
-    }, [config.trade_amount_usd, showNotification, addLog]);
+    }, [showNotification, addLog]);
 
 
-    const runAnalysis = useCallback(async (currentConfig: StrategyConfig, currentApiKey: string) => {
+    const runAnalysis = useCallback(async () => {
+        if (isAnalysisRunning.current) {
+            addLog('Analysis already in progress, skipping tick.', 'info');
+            return;
+        }
+        isAnalysisRunning.current = true;
+
+        const currentConfig = configRef.current;
+        const currentApiKey = apiKeyRef.current;
+        const currentClosedTrades = closedTradesRef.current;
+
         if (!currentApiKey) {
             setError('API Key is not set. Please connect first.');
             setSimulationStatus('stopped');
             addLog('Simulation stopped: API Key missing.', 'error');
+            isAnalysisRunning.current = false;
             return;
         }
         setIsLoading(true);
@@ -145,7 +162,7 @@ const App: React.FC = () => {
         addLog('Requesting new signals from Gemini API...', 'request', { pairs: currentConfig.trading_pairs, timeframes: currentConfig.timeframes });
 
         try {
-            const generatedSignals = await generateTradingSignals(currentConfig, currentApiKey);
+            const generatedSignals = await generateTradingSignals(currentConfig, currentApiKey, currentClosedTrades);
             addLog('Received response from Gemini API.', 'response', generatedSignals);
             setSignals(generatedSignals);
             
@@ -163,8 +180,7 @@ const App: React.FC = () => {
                 });
             }
 
-            // Check open trades against new prices for TP/SL. This logic has been stabilized.
-            const activeTrades = openTrades.filter(trade => trade.status === 'active');
+            const activeTrades = openTradesRef.current.filter(trade => trade.status === 'active');
             for (const trade of activeTrades) {
                 const currentSignal = signalsMap.get(trade.pair);
                 if (!currentSignal?.last_price) continue;
@@ -194,24 +210,33 @@ const App: React.FC = () => {
                 price: signal.last_price || 0,
                 action: signal.action,
                 confidence: signal.confidence,
-                meta: signal.meta, // Capture full timeframe analysis
+                meta: signal.meta,
             }));
             setAnalysisLog(prev => [...newLogEntries, ...prev]);
 
         } catch (e) {
             console.error(e);
             const errorMessage = e instanceof Error ? e.message : String(e);
-            const fullError = `Error generating signals: ${errorMessage}`;
-            setError(fullError);
-            addLog(fullError, 'error');
-            if (simulationStatus === 'running') {
-                setSimulationStatus('stopped');
-                setError('Simulation failed and has been stopped. Please check terminal and API key.');
+            
+            if (errorMessage.includes("429") || errorMessage.toLowerCase().includes("quota")) {
+                 const rateLimitError = "API rate limit exceeded. The simulation has been paused. Please wait a moment before resuming.";
+                 setError(rateLimitError);
+                 addLog(rateLimitError, 'error');
+                 setSimulationStatus('paused');
+            } else {
+                 const fullError = `Error generating signals: ${errorMessage}`;
+                 setError(fullError);
+                 addLog(fullError, 'error');
+                 if (simulationStatus === 'running') {
+                     setSimulationStatus('stopped');
+                     setError('Simulation failed due to a critical error and has been stopped. Please check the terminal and your API key.');
+                 }
             }
         } finally {
             setIsLoading(false);
+            isAnalysisRunning.current = false;
         }
-    }, [simulationStatus, showNotification, addLog, closeTrade, openTrades]);
+    }, [addLog, showNotification, closeTrade, simulationStatus]);
     
     const handleManualAnalysis = () => {
         if(!apiKey) {
@@ -219,7 +244,7 @@ const App: React.FC = () => {
             return;
         }
         setSignals([]);
-        runAnalysis(config, apiKey);
+        runAnalysis();
     }
 
     const handleConnect = useCallback((key: string) => {
@@ -239,7 +264,7 @@ const App: React.FC = () => {
     const handlePlay = () => {
         addLog('Simulation starting...', 'info');
         setSimulationStatus('running');
-        runAnalysis(configRef.current, apiKeyRef.current); 
+        runAnalysis(); 
     };
     
     const handlePause = () => {
@@ -255,8 +280,8 @@ const App: React.FC = () => {
     }
 
     useEffect(() => {
-        if (simulationStatus === 'running' && apiKeyRef.current) {
-            intervalRef.current = window.setInterval(() => runAnalysis(configRef.current, apiKeyRef.current), SIMULATION_INTERVAL);
+        if (simulationStatus === 'running') {
+            intervalRef.current = window.setInterval(runAnalysis, SIMULATION_INTERVAL);
         } else if (intervalRef.current) {
             clearInterval(intervalRef.current);
             intervalRef.current = null;
@@ -273,11 +298,11 @@ const App: React.FC = () => {
             return;
         }
 
-        if (openTrades.length >= config.max_concurrent_trades) {
+        if (openTradesRef.current.length >= configRef.current.max_concurrent_trades) {
             alert("Max concurrent trades reached.");
             return;
         }
-        if (openTrades.some(trade => trade.pair === signal.pair)) {
+        if (openTradesRef.current.some(trade => trade.pair === signal.pair)) {
             alert("A trade for this pair is already open.");
             return;
         }
@@ -291,10 +316,12 @@ const App: React.FC = () => {
             takeProfit: signal.take_profit,
             stopLoss: signal.stop_loss,
             status: 'pending',
+            initialConfidence: signal.confidence,
+            initialSignalMeta: signal.meta,
         };
         setOpenTrades(prev => [newTrade, ...prev]);
         addLog(`Position for ${signal.pair} (${direction}) opened with status 'pending'.`, 'info');
-    }, [signals, openTrades, config.max_concurrent_trades, addLog]);
+    }, [signals, addLog]);
     
     const handleConfirmTrade = useCallback((tradeId: string) => {
         setOpenTrades(prev => prev.map(t => {
@@ -317,13 +344,13 @@ const App: React.FC = () => {
     }, [addLog]);
 
     const handleCloseTrade = useCallback((tradeId: string) => {
-        const tradeToClose = openTrades.find(t => t.id === tradeId);
+        const tradeToClose = openTradesRef.current.find(t => t.id === tradeId);
         if(tradeToClose){
             const signal = signals.find(s => s.pair === tradeToClose.pair);
             const exitPrice = signal?.last_price || tradeToClose.entryPrice;
             closeTrade(tradeToClose, exitPrice, 'Manual close');
         }
-    }, [openTrades, signals, closeTrade]);
+    }, [signals, closeTrade]);
     
     const arrayToCsv = (data: any[], columns: {key: string, label: string}[]) => {
         if (data.length === 0) return '';
@@ -405,7 +432,7 @@ const App: React.FC = () => {
                             onPlay={handlePlay}
                             onPause={handlePause}
                             onStop={handleStop}
-                            onAdvance={() => runAnalysis(config, apiKey)}
+                            onAdvance={runAnalysis}
                             isDisabled={!apiKey || isLoading}
                         />
                         <ControlPanel
@@ -415,7 +442,7 @@ const App: React.FC = () => {
                             isLoading={isLoading && simulationStatus === 'stopped'}
                             isSimulating={simulationStatus !== 'stopped'}
                         />
-                        <Scoreboard openTrades={openTrades} closedTrades={closedTrades} signals={signals} />
+                        <Scoreboard openTrades={openTrades} closedTrades={closedTrades} signals={signals} tradeAmountUSD={config.trade_amount_usd} />
                     </div>
                     <div className="lg:col-span-9 flex flex-col gap-8">
                         {error && (
