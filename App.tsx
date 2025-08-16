@@ -36,7 +36,8 @@ const App: React.FC = () => {
     const [dailyTradeLimit, setDailyTradeLimit] = useState(100);
 
     const botInstanceRef = useRef<XrpUsdTrader | null>(null);
-    const intervalRef = useRef<number | null>(null);
+    const tickTimeoutRef = useRef<number | null>(null);
+    const isTickingRef = useRef(false);
     const openTradesRef = useRef<Trade[]>([]);
 
     const TRADING_PAIR = 'XRP/USDT';
@@ -150,6 +151,13 @@ const App: React.FC = () => {
         }
     }, [addLog]);
 
+    const tickLoop = useCallback(async () => {
+        if (!isTickingRef.current) return;
+        await runMainTick();
+        if (isTickingRef.current) { // Check again in case it was stopped during the tick
+            tickTimeoutRef.current = window.setTimeout(tickLoop, TICK_INTERVAL);
+        }
+    }, [runMainTick]);
 
     useEffect(() => {
         const initialLoad = async () => {
@@ -159,13 +167,13 @@ const App: React.FC = () => {
         };
         initialLoad();
         
-        // Cleanup interval on component unmount
         return () => {
-            if (intervalRef.current) {
-                clearInterval(intervalRef.current);
+            isTickingRef.current = false;
+            if (tickTimeoutRef.current) {
+                clearTimeout(tickTimeoutRef.current);
             }
         };
-    }, [addLog, refreshPriceHistoryFromDB]);
+    }, [addLog, refreshPriceHistoryFromDB, tickLoop]);
     
     const handleBinanceConnect = useCallback(async (key: string, secret: string) => {
         setIsBinanceConnected(true);
@@ -203,17 +211,17 @@ const App: React.FC = () => {
         addLog(`Starting live analysis... Ticking every ${TICK_INTERVAL / 1000}s.`, 'request');
         setAnalysisLog([]);
         
-        if (intervalRef.current) clearInterval(intervalRef.current);
-        runMainTick(); // Run once immediately
-        intervalRef.current = window.setInterval(runMainTick, TICK_INTERVAL);
+        isTickingRef.current = true;
         setSimulationStatus('live');
+        tickLoop();
     };
 
     const handleStop = () => {
         addLog('Stopping analysis...', 'request');
-        if (intervalRef.current) {
-            clearInterval(intervalRef.current);
-            intervalRef.current = null;
+        isTickingRef.current = false;
+        if (tickTimeoutRef.current) {
+            clearTimeout(tickTimeoutRef.current);
+            tickTimeoutRef.current = null;
         }
         setSimulationStatus('stopped');
         setOpenTrades([]);

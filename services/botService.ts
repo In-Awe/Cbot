@@ -1,4 +1,3 @@
-
 import type { PriceHistoryLogEntry, HeatScores } from '../types';
 import { calculateSMA, calculateStdDev } from './ta';
 
@@ -19,7 +18,7 @@ const TraderSettings = {
     VOLATILITY_WINDOW_S: 300,          // 5-minute window for volatility calc
 
     // Dynamic Behavior Tuning
-    VOLATILITY_MULTIPLIER: 2.0,        // Controls sensitivity to volatility (slightly lower)
+    VOLATILITY_MULTIPLIER: 2.5,        // Increase sensitivity to volatility
 
     // Bot Internals
     NUM_TRADES_PER_DAY: 100,
@@ -94,20 +93,25 @@ export class XrpUsdTrader {
             return emptyScores;
         }
 
-        // 1. Calculate recent volatility from the last 5 minutes (300 seconds)
         const volatilityCandles = candles.slice(-this.settings.VOLATILITY_WINDOW_S);
-        const priceReturns = volatilityCandles.slice(1).map((c, i) => {
-            const prevClose = volatilityCandles[i].close;
-            if (prevClose === 0) return 0;
-            return (c.close - prevClose) / prevClose;
-        });
-        const volatility = calculateStdDev(priceReturns) * 100;
-
-        // 2. Calculate dynamic price change threshold
+        
+        // CRITICAL BUG FIX: The original logic for calculating returns was flawed.
+        // This new loop correctly calculates the percentage change between each candle.
+        const priceReturns = [];
+        for (let i = 1; i < volatilityCandles.length; i++) {
+            const prevClose = volatilityCandles[i-1].close;
+            const currentClose = volatilityCandles[i].close;
+            if (Number.isFinite(prevClose) && prevClose > 0 && Number.isFinite(currentClose)) {
+                priceReturns.push((currentClose - prevClose) / prevClose);
+            }
+        }
+        
+        const calculatedVolatility = calculateStdDev(priceReturns) * 100;
+        const volatility = Number.isFinite(calculatedVolatility) ? calculatedVolatility : 0;
+        
         const dynamicPriceThreshold = this.settings.BASE_PRICE_CHANGE_THRESHOLD * (1 + this.settings.VOLATILITY_MULTIPLIER * volatility);
         this.lastDynamicPriceThreshold = dynamicPriceThreshold;
 
-        // 3. Evaluate Impulse with the new dynamic threshold
         const impulseWindow = this.settings.IMPULSE_WINDOW_S;
         if (candles.length < impulseWindow) return emptyScores;
 
@@ -115,7 +119,6 @@ export class XrpUsdTrader {
         const firstCandle = recentCandles[0];
         const lastCandle = recentCandles[recentCandles.length - 1];
         
-        // **BUG FIX**: Prevent division by zero if the opening price is 0.
         if (firstCandle.open === 0) {
             return emptyScores;
         }
