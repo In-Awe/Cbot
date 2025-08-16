@@ -11,12 +11,15 @@ import { SimulationControl } from './components/SimulationControl';
 import { PriceHistoryLog } from './components/PriceHistoryLog';
 import { PredictionAccuracy } from './components/PredictionAccuracy';
 import { LivePrices } from './components/LivePrices';
-import type { StrategyConfig, Signal, Trade, AnalysisLogEntry, TerminalLogEntry, SimulationStatus, PriceHistoryLogEntry, PredictionAccuracyRecord } from './types';
-import { generateTradingSignals } from './services/geminiService';
-import { fetchLivePrices } from './services/binanceService';
+import { ManualAnalysisModal } from './components/ManualAnalysisModal';
+import { BotStrategy } from './components/BotStrategy';
+import type { StrategyConfig, Signal, Trade, AnalysisLogEntry, TerminalLogEntry, SimulationStatus, PriceHistoryLogEntry, PredictionAccuracyRecord, AnalysisEngine } from './types';
+import { generateTradingSignals, constructGeminiPrompt } from './services/geminiService';
+import { runBotAnalysis } from './services/botService';
+import { fetchKlinesSince, resampleKlinesTo15sCandles, fetchHistorical1mKlines, fetchHistoricalHighResCandles } from './services/binanceService';
+import { addPriceHistory, getPriceHistory, getFullPriceHistory, getHistoryCounts, initDBForPairs, getLatestEntryTimestamp } from './services/dbService';
 import { DEFAULT_STRATEGY_CONFIG } from './constants';
 
-const SIMULATION_INTERVAL = 60000; // 60 seconds
 const PRICE_FETCH_INTERVAL = 15000; // 15 seconds
 
 function usePrevious<T>(value: T): T | undefined {
@@ -40,44 +43,36 @@ const App: React.FC = () => {
     });
     
     const [predictionRecords, setPredictionRecords] = useState<PredictionAccuracyRecord[]>([]);
-    const [priceHistoryLog, setPriceHistoryLog] = useState<Record<string, PriceHistoryLogEntry[]>>(() => {
-        const saved = localStorage.getItem('priceHistoryLogs');
-        return saved ? JSON.parse(saved) : {};
-    });
-    const [livePrices, setLivePrices] = useState<Record<string, number>>({});
+    const [displayPriceHistory, setDisplayPriceHistory] = useState<Record<string, PriceHistoryLogEntry[]>>({});
+    const [priceHistoryCounts, setPriceHistoryCounts] = useState<Record<string, number>>({});
+    const [livePrices, setLivePrices] = useState<Record<string, PriceHistoryLogEntry | undefined>>({});
 
     const [isLoading, setIsLoading] = useState<boolean>(false);
     const [error, setError] = useState<string | null>(null);
     const [simulationStatus, setSimulationStatus] = useState<SimulationStatus>('stopped');
+    const [analysisEngine, setAnalysisEngine] = useState<AnalysisEngine>('internal');
     const [analysisLog, setAnalysisLog] = useState<AnalysisLogEntry[]>([]);
     const [terminalLog, setTerminalLog] = useState<TerminalLogEntry[]>([]);
     const [geminiApiKey, setGeminiApiKey] = useState<string>('');
-    const [binanceKeys, setBinanceKeys] = useState<{key: string, secret: string}>({key: '', secret: ''});
     const [isGeminiConnected, setIsGeminiConnected] = useState(false);
     const [isBinanceConnected, setIsBinanceConnected] = useState(false);
 
+    const [isManualAnalysisModalOpen, setIsManualAnalysisModalOpen] = useState(false);
+    const [manualAnalysisPrompt, setManualAnalysisPrompt] = useState('');
+
     const intervalRef = useRef<number | null>(null);
+    const priceFetchIntervalRef = useRef<number | null>(null);
     const configRef = useRef(config);
-    const geminiApiKeyRef = useRef(geminiApiKey);
     const isBinanceConnectedRef = useRef(isBinanceConnected);
-    const openTradesRef = useRef(openTrades);
-    const closedTradesRef = useRef(closedTrades);
-    const terminalLogRef = useRef(terminalLog);
-    const livePricesRef = useRef(livePrices);
     const isAnalysisRunning = useRef(false);
+    const livePricesRef = useRef(livePrices);
+    const lastFetchTimestampsRef = useRef<Record<string, number>>({});
 
     useEffect(() => { configRef.current = config; }, [config]);
-    useEffect(() => { geminiApiKeyRef.current = geminiApiKey; }, [geminiApiKey]);
     useEffect(() => { isBinanceConnectedRef.current = isBinanceConnected; }, [isBinanceConnected]);
-    useEffect(() => { openTradesRef.current = openTrades; }, [openTrades]);
-    useEffect(() => { closedTradesRef.current = closedTrades; }, [closedTrades]);
-    useEffect(() => { terminalLogRef.current = terminalLog; }, [terminalLog]);
     useEffect(() => { livePricesRef.current = livePrices; }, [livePrices]);
-
     useEffect(() => { localStorage.setItem('openTrades', JSON.stringify(openTrades)); }, [openTrades]);
     useEffect(() => { localStorage.setItem('closedTrades', JSON.stringify(closedTrades)); }, [closedTrades]);
-    useEffect(() => { localStorage.setItem('priceHistoryLogs', JSON.stringify(priceHistoryLog)); }, [priceHistoryLog]);
-
 
     const addLog = useCallback((message: string, type: TerminalLogEntry['type'] = 'info', data?: any) => {
         const newEntry: TerminalLogEntry = {
@@ -87,7 +82,27 @@ const App: React.FC = () => {
             type,
             data: data ? JSON.stringify(data, null, 2) : undefined,
         };
-        setTerminalLog(prev => [newEntry, ...prev]);
+        setTerminalLog(prev => [newEntry, ...prev.slice(0, 199)]);
+    }, []);
+
+    const refreshPriceHistoryFromDB = useCallback(async () => {
+        const pairs = configRef.current.trading_pairs;
+        const newDisplayHistory: Record<string, PriceHistoryLogEntry[]> = {};
+        for (const pair of pairs) {
+            newDisplayHistory[pair] = await getPriceHistory(pair, 100);
+        }
+        setDisplayPriceHistory(newDisplayHistory);
+        const counts = await getHistoryCounts(pairs);
+        setPriceHistoryCounts(counts);
+    }, []);
+
+    useEffect(() => {
+        const initialLoad = async () => {
+            addLog('App initialized. Loading data from storage.', 'info');
+            await initDBForPairs(config.trading_pairs);
+            await refreshPriceHistoryFromDB();
+        };
+        initialLoad();
     }, []);
     
     const prevConfig = usePrevious(config);
@@ -100,9 +115,7 @@ const App: React.FC = () => {
                      changes.push(`${typedKey} changed to ${JSON.stringify(config[typedKey])}`);
                 }
             }
-            if (changes.length > 0) {
-                addLog(`Strategy config updated: ${changes.join('; ')}`, 'info');
-            }
+            if (changes.length > 0) addLog(`Strategy config updated: ${changes.join('; ')}`, 'info');
         }
     }, [config, addLog]);
 
@@ -122,7 +135,7 @@ const App: React.FC = () => {
     }, []);
 
     const closeTrade = useCallback((trade: Trade, exitPrice: number, reason: string) => {
-        const tradeAmount = configRef.current.trade_amount_usd;
+        const tradeAmount = trade.tradeAmountUSD;
         let pnl = 0;
         if (trade.direction === 'LONG') {
             pnl = (exitPrice - trade.entryPrice) * (tradeAmount / trade.entryPrice);
@@ -148,16 +161,16 @@ const App: React.FC = () => {
         }
     };
     
-    const resolvePredictions = useCallback((currentPrices: Record<string, number>) => {
+    const resolvePredictions = useCallback((currentPrices: Record<string, PriceHistoryLogEntry | undefined>) => {
         setPredictionRecords(prevRecords => {
             const now = Date.now();
             return prevRecords.map(rec => {
                 if (rec.status === 'pending' && (now - rec.predictionTime) > getCheckInterval(rec.timeframe)) {
-                    const endPrice = currentPrices[rec.pair];
-                    if (endPrice === undefined) return rec; // Can't resolve yet
+                    const endPrice = currentPrices[rec.pair]?.close;
+                    if (endPrice === undefined) return rec; 
 
                     const priceChange = endPrice - rec.startPrice;
-                    const outcome = Math.abs(priceChange / rec.startPrice) < 0.0005 ? 'SIDEWAYS' // less than 0.05% change
+                    const outcome = Math.abs(priceChange / rec.startPrice) < 0.0005 ? 'SIDEWAYS'
                                    : priceChange > 0 ? 'UP' : 'DOWN';
                     
                     const success = (rec.predictedSignal === 'bull' && outcome === 'UP') || (rec.predictedSignal === 'bear' && outcome === 'DOWN');
@@ -168,66 +181,178 @@ const App: React.FC = () => {
             });
         });
     }, []);
+
+    const handleConfirmTrade = useCallback((tradeId: string) => {
+        setOpenTrades(prevOpenTrades => {
+            const tradeToConfirm = prevOpenTrades.find(t => t.id === tradeId);
+            if (tradeToConfirm) {
+                addLog(`Confirmed trade for ${tradeToConfirm.pair}. Position active.`, 'info');
+                return prevOpenTrades.map(t => t.id === tradeId ? { ...t, status: 'active' } : t);
+            }
+            return prevOpenTrades;
+        });
+    }, [addLog]);
+
+    const handleOpenTimeframeTrade = useCallback((pair: string, direction: 'LONG' | 'SHORT') => {
+        const signal = signals.find(s => s.pair === pair);
+        if (!signal || !signal.last_price || !signal.take_profit || !signal.stop_loss || !signal.betSizeUSD) {
+             alert("Signal data incomplete for trading.");
+             return;
+        }
+        if (openTrades.length >= config.max_concurrent_trades) return alert("Max concurrent trades reached.");
+        if (openTrades.some(trade => trade.pair === signal.pair)) return alert("Trade for this pair already open.");
+        
+        const newTrade: Trade = {
+            id: `${signal.pair}-${Date.now()}`, pair: signal.pair, direction: direction, entryPrice: signal.last_price,
+            openedAt: new Date(), takeProfit: signal.take_profit, stopLoss: signal.stop_loss, status: 'pending',
+            tradeAmountUSD: signal.betSizeUSD,
+            initialConfidence: signal.confidence, initialSignalMeta: signal.meta,
+        };
+        setOpenTrades(prev => [newTrade, ...prev]);
+        addLog(`Position for ${signal.pair} (${direction}) of $${signal.betSizeUSD?.toFixed(2)} opened with status 'pending'.`, 'info');
+        if (simulationStatus === 'running' && analysisEngine === 'internal') {
+           setTimeout(() => handleConfirmTrade(newTrade.id), 100);
+        }
+    }, [signals, addLog, openTrades, config.max_concurrent_trades, simulationStatus, analysisEngine, handleConfirmTrade]);
+
+    const processSignalsAndUpdateState = useCallback((generatedSignals: Signal[], currentSimStatus: SimulationStatus) => {
+        const currentPrices = livePricesRef.current;
+        addLog('Processing generated signals...', 'info', generatedSignals);
+
+        const signalsWithLivePrices = generatedSignals.map(signal => ({ ...signal, last_price: currentPrices[signal.pair]?.close || signal.last_price }));
+        setSignals(signalsWithLivePrices);
+
+        const newPredictionRecords: PredictionAccuracyRecord[] = [];
+        signalsWithLivePrices.forEach(signal => {
+            signal.meta.forEach(m => {
+                if ((m.signal === 'bull' || m.signal === 'bear') && signal.last_price) {
+                    newPredictionRecords.push({
+                        id: `${signal.pair}-${m.timeframe}-${m.signal}-${Date.now()}`,
+                        pair: signal.pair,
+                        timeframe: m.timeframe,
+                        predictedSignal: m.signal,
+                        predictionTime: Date.now(),
+                        startPrice: signal.last_price,
+                        status: 'pending'
+                    });
+                }
+            });
+        });
+        setPredictionRecords(prev => [...newPredictionRecords, ...prev]);
+        
+        // Auto-trading logic, only executes when status is 'running'
+        if (currentSimStatus === 'running') {
+            signalsWithLivePrices.forEach(signal => {
+                const isTradeOpen = openTrades.some(t => t.pair === signal.pair && t.status === 'active');
+                if (!isTradeOpen && (signal.action === 'buy' || signal.action === 'sell') && signal.confidence > 0.75) {
+                    const direction = signal.action === 'buy' ? 'LONG' : 'SHORT';
+                    handleOpenTimeframeTrade(signal.pair, direction);
+                    showNotification(`${signal.action.toUpperCase()} Signal: ${signal.pair}`, {
+                        body: `Auto-opening trade for $${signal.betSizeUSD?.toFixed(2)}. Price: $${signal.last_price?.toFixed(4)} | Confidence: ${Math.round(signal.confidence * 100)}%`, icon: '/vite.svg', pair: signal.pair,
+                    });
+                }
+            });
+        }
+
+        for (const trade of openTrades.filter(t => t.status === 'active')) {
+            const currentPrice = currentPrices[trade.pair]?.close;
+            if (!currentPrice) continue;
+            addLog(`Checking active trade ${trade.pair}: Current Price: $${currentPrice.toFixed(4)}, TP: $${trade.takeProfit.toFixed(4)}, SL: $${trade.stopLoss.toFixed(4)}`, 'info');
+            if (trade.direction === 'LONG') {
+                if (currentPrice >= trade.takeProfit) closeTrade(trade, trade.takeProfit, 'Take Profit hit');
+                else if (currentPrice <= trade.stopLoss) closeTrade(trade, trade.stopLoss, 'Stop Loss hit');
+            } else { // SHORT
+                if (currentPrice <= trade.takeProfit) closeTrade(trade, trade.takeProfit, 'Take Profit hit');
+                else if (currentPrice >= trade.stopLoss) closeTrade(trade, trade.stopLoss, 'Stop Loss hit');
+            }
+        }
+
+        const newLogEntries: AnalysisLogEntry[] = signalsWithLivePrices.map(signal => ({
+            id: `${signal.pair}-${Date.now()}`,
+            timestamp: new Date(),
+            pair: signal.pair,
+            price: signal.last_price || 0,
+            action: signal.action,
+            confidence: signal.confidence,
+            meta: signal.meta,
+        }));
+        setAnalysisLog(prev => [...newLogEntries, ...prev.slice(0, 99)]);
+
+    }, [addLog, showNotification, closeTrade, openTrades, handleOpenTimeframeTrade]);
     
-    const fetchAndSetPrices = useCallback(async (): Promise<boolean> => {
+    const fetchAndStoreLiveCandles = useCallback(async (): Promise<void> => {
         const currentConfig = configRef.current;
         if (!isBinanceConnectedRef.current || currentConfig.trading_pairs.length === 0) {
             setLivePrices({});
-            return false;
+            return;
         }
 
         try {
-            // Passing an empty string for API key as it's not used by the proxied public endpoint
-            const prices = await fetchLivePrices(currentConfig.trading_pairs, '');
-            if (Object.keys(prices).length > 0) {
-                setLivePrices(prices);
-                setPriceHistoryLog(prev => {
-                    const newLogs = { ...prev };
-                    Object.entries(prices).forEach(([pair, price]) => {
-                        const newEntry: PriceHistoryLogEntry = { id: Date.now() + Math.random(), timestamp: new Date(), pair, price };
-                        const pairHistory = prev[pair] ? [newEntry, ...prev[pair]] : [newEntry];
-                        newLogs[pair] = pairHistory.slice(0, 500);
-                    });
-                    return newLogs;
-                });
-                return true;
+            const results = await Promise.all(currentConfig.trading_pairs.map(async (pair) => {
+                const lastTimestamp = lastFetchTimestampsRef.current[pair] || (Date.now() - 30 * 1000);
+                const newKlines1s = await fetchKlinesSince(pair, '1s', lastTimestamp + 1);
+
+                if (newKlines1s.length === 0) return { pair, newCandles: [], latestCandle: undefined };
+
+                const newCandles15s = resampleKlinesTo15sCandles(newKlines1s, pair);
+                
+                if (newCandles15s.length > 0) {
+                    await addPriceHistory(pair, newCandles15s);
+                    lastFetchTimestampsRef.current[pair] = newKlines1s[newKlines1s.length - 1].id;
+                }
+                
+                return { pair, newCandles: newCandles15s, latestCandle: newCandles15s[newCandles15s.length - 1] };
+            }));
+
+            let shouldRefreshHistory = false;
+            const newLivePrices: Record<string, PriceHistoryLogEntry> = {};
+            results.forEach(({ pair, newCandles, latestCandle }) => {
+                if (newCandles.length > 0) shouldRefreshHistory = true;
+                const finalCandle = latestCandle || livePricesRef.current[pair];
+                if (finalCandle) newLivePrices[pair] = finalCandle;
+            });
+            
+            setLivePrices(prev => ({...prev, ...newLivePrices }));
+
+            if (shouldRefreshHistory) {
+                await refreshPriceHistoryFromDB();
             }
-             return false;
+
         } catch(e) {
             const error = e instanceof Error ? e.message : String(e);
-            const lastLog = terminalLogRef.current[0];
-            if (!lastLog || !lastLog.message.includes(error)) {
-                addLog(`Failed to fetch prices from Binance: ${error}`, 'error');
-            }
-            setLivePrices({});
-            return false;
+            addLog(`Failed to fetch live candles from Binance: ${error}`, 'error');
         }
-    }, [addLog]);
+    }, [addLog, refreshPriceHistoryFromDB]);
+
 
     useEffect(() => {
         if (isBinanceConnected) {
-            fetchAndSetPrices();
-            const priceInterval = setInterval(fetchAndSetPrices, PRICE_FETCH_INTERVAL);
-            return () => clearInterval(priceInterval);
+            fetchAndStoreLiveCandles();
+            priceFetchIntervalRef.current = window.setInterval(fetchAndStoreLiveCandles, PRICE_FETCH_INTERVAL);
+            return () => {
+                if (priceFetchIntervalRef.current) clearInterval(priceFetchIntervalRef.current);
+            };
         } else {
             setLivePrices({});
         }
-    }, [isBinanceConnected, fetchAndSetPrices]);
+    }, [isBinanceConnected, fetchAndStoreLiveCandles]);
 
-    const runAnalysis = useCallback(async (isManualReport = false) => {
+    const runAnalysis = useCallback(async () => {
         if (isAnalysisRunning.current) {
             addLog('Analysis already in progress, skipping tick.', 'warn');
             return;
         }
         isAnalysisRunning.current = true;
+        
+        let currentSimStatus: SimulationStatus = 'stopped';
+        setSimulationStatus(prev => {
+            currentSimStatus = prev;
+            return prev;
+        });
 
-        const currentConfig = configRef.current;
-        const currentGeminiApiKey = geminiApiKeyRef.current;
-
-        if (!currentGeminiApiKey || !isBinanceConnectedRef.current) {
-            setError('Both Gemini and Binance must be connected to run the simulation.');
+        if ((analysisEngine === 'gemini' && !geminiApiKey) || !isBinanceConnectedRef.current) {
+            setError('Both Gemini (if selected) and Binance must be connected to run the simulation.');
             setSimulationStatus('stopped');
-            addLog('Simulation stopped: API connections incomplete.', 'error');
             isAnalysisRunning.current = false;
             return;
         }
@@ -235,106 +360,61 @@ const App: React.FC = () => {
         setError(null);
 
         try {
-            // 1. Get live prices from the state, which is updated independently
             const currentPrices = livePricesRef.current;
-            if (Object.keys(currentPrices).length === 0) {
+            if (Object.values(currentPrices).every(p => p === undefined)) {
                  throw new Error("Live prices are not available. Check Binance connection or trading pairs.");
             }
-
-            // 2. Resolve any pending prediction accuracy records
             resolvePredictions(currentPrices);
-
-            // 3. Generate signals from Gemini
-            addLog('Requesting new signals from Gemini API...', 'request', { pairs: currentConfig.trading_pairs });
-            const generatedSignals = await generateTradingSignals(currentConfig, currentGeminiApiKey, closedTradesRef.current, currentPrices, priceHistoryLog);
-            addLog('Received response from Gemini API.', 'response', generatedSignals);
             
-            const signalsWithLivePrices = generatedSignals.map(signal => ({ ...signal, last_price: currentPrices[signal.pair] || signal.last_price }));
-            setSignals(signalsWithLivePrices);
+            const fullPriceHistory: Record<string, PriceHistoryLogEntry[]> = await Object.fromEntries(
+                await Promise.all(config.trading_pairs.map(async pair => [pair, await getFullPriceHistory(pair)]))
+            );
 
-            // 4. Create new prediction records
-            const newPredictionRecords: PredictionAccuracyRecord[] = [];
-            signalsWithLivePrices.forEach(signal => {
-                signal.meta.forEach(m => {
-                    if ((m.signal === 'bull' || m.signal === 'bear') && signal.last_price) {
-                        newPredictionRecords.push({
-                            id: `${signal.pair}-${m.timeframe}-${m.signal}-${Date.now()}`,
-                            pair: signal.pair,
-                            timeframe: m.timeframe,
-                            predictedSignal: m.signal,
-                            predictionTime: Date.now(),
-                            startPrice: signal.last_price,
-                            status: 'pending'
-                        });
-                    }
-                });
-            });
-            setPredictionRecords(prev => [...newPredictionRecords, ...prev]);
-            
-            // 5. Check trades, notifications, and logs
-            const signalsMap = new Map(signalsWithLivePrices.map(s => [s.pair, s]));
-            if (simulationStatus === 'running' && !isManualReport) {
-                signalsWithLivePrices.forEach(signal => {
-                    if (signal.action === 'buy' || signal.action === 'sell') {
-                         showNotification(`${signal.action.toUpperCase()} Signal: ${signal.pair}`, {
-                            body: `Price: $${signal.last_price?.toFixed(4)} | Confidence: ${Math.round(signal.confidence * 100)}%`, icon: '/vite.svg', pair: signal.pair,
-                        });
-                    }
+            let generatedSignals: Signal[] = [];
+
+            if (analysisEngine === 'gemini') {
+                addLog('Sending analysis request to Gemini API with summarized historical data...', 'request', {
+                    pairs: config.trading_pairs,
+                    history_summary: Object.fromEntries(Object.entries(fullPriceHistory).map(([p,h]) => [p, `${h.length} records`])),
                 });
 
-                for (const trade of openTradesRef.current.filter(t => t.status === 'active')) {
-                    const currentPrice = currentPrices[trade.pair];
-                    if (!currentPrice) continue;
-                    addLog(`Checking active trade ${trade.pair}: Current Price: $${currentPrice.toFixed(4)}, TP: $${trade.takeProfit.toFixed(4)}, SL: $${trade.stopLoss.toFixed(4)}`, 'info');
-                    if (trade.direction === 'LONG') {
-                        if (currentPrice >= trade.takeProfit) closeTrade(trade, trade.takeProfit, 'Take Profit hit');
-                        else if (currentPrice <= trade.stopLoss) closeTrade(trade, trade.stopLoss, 'Stop Loss hit');
-                    } else { // SHORT
-                        if (currentPrice <= trade.takeProfit) closeTrade(trade, trade.takeProfit, 'Take Profit hit');
-                        else if (currentPrice >= trade.stopLoss) closeTrade(trade, trade.stopLoss, 'Stop Loss hit');
-                    }
-                }
+                const livePricesForPrompt = Object.fromEntries(
+                    Object.entries(currentPrices)
+                    .filter(([, value]) => value !== undefined)
+                    .map(([key, value]) => [key, value!.close])
+                );
+
+                generatedSignals = await generateTradingSignals(config, geminiApiKey, closedTrades, livePricesForPrompt, fullPriceHistory);
+
+            } else { // Internal Bot
+                addLog('Running internal bot analysis...', 'request');
+                const signals = await Promise.all(config.trading_pairs.map(async (pair) => {
+                    const history = fullPriceHistory[pair];
+                    const livePrice = currentPrices[pair];
+                    if (!history || !livePrice) return null;
+                    return runBotAnalysis(pair, history, config, livePrice);
+                }));
+                generatedSignals = signals.filter((s): s is Signal => s !== null);
             }
-
-            const newLogEntries: AnalysisLogEntry[] = signalsWithLivePrices.map(signal => ({
-                id: `${signal.pair}-${Date.now()}`,
-                timestamp: new Date(),
-                pair: signal.pair,
-                price: signal.last_price || 0,
-                action: signal.action,
-                confidence: signal.confidence,
-                meta: signal.meta,
-            }));
-            setAnalysisLog(prev => [...newLogEntries, ...prev]);
+            
+            processSignalsAndUpdateState(generatedSignals, currentSimStatus);
 
         } catch (e) {
-            console.error(e);
             const errorMessage = e instanceof Error ? e.message : String(e);
             const fullError = `Analysis Error: ${errorMessage}`;
             setError(fullError);
             addLog(fullError, 'error');
-            if (simulationStatus === 'running') {
-                 setSimulationStatus('paused');
-                 setError('Simulation paused due to an error. Check terminal for details.');
-            }
+            if (currentSimStatus !== 'stopped') setSimulationStatus('paused');
         } finally {
             setIsLoading(false);
             isAnalysisRunning.current = false;
         }
-    }, [addLog, showNotification, closeTrade, simulationStatus, resolvePredictions, priceHistoryLog]);
+    }, [addLog, resolvePredictions, processSignalsAndUpdateState, analysisEngine, geminiApiKey, config, closedTrades]);
     
     const handleManualPriceFetch = async () => {
-        if (!isBinanceConnected) {
-            alert("Please connect to Binance first.");
-            return;
-        }
+        if (!isBinanceConnected) return alert("Please connect to Binance first.");
         addLog('Manually fetching live prices...', 'request');
-        const success = await fetchAndSetPrices();
-        if (success) {
-            addLog('Manual price fetch successful.', 'info');
-        } else {
-            addLog('Manual price fetch failed. Check logs for errors.', 'warn');
-        }
+        await fetchAndStoreLiveCandles();
     };
 
     const handleGeminiConnect = useCallback((apiKey: string) => {
@@ -343,16 +423,51 @@ const App: React.FC = () => {
         addLog('Gemini API Connected.', 'info');
     }, [addLog]);
 
-    const handleBinanceConnect = useCallback((key: string, secret: string) => {
-        setBinanceKeys({ key, secret });
+    const handleBinanceConnect = useCallback(async (key: string, secret: string) => {
         setIsBinanceConnected(true);
         addLog('Binance API Connected. Starting live price feed.', 'info');
-    }, [addLog]);
+        
+        try {
+            await initDBForPairs(configRef.current.trading_pairs);
+
+            for (const pair of configRef.current.trading_pairs) {
+                addLog(`Backfilling historical data for ${pair}... This may take a few minutes.`, 'request');
+                
+                // Fetch 30 hours of 1-minute data to satisfy bot requirements
+                addLog(`[${pair}] Fetching 30 hours of 1-minute k-lines...`, 'info');
+                const klines1m = await fetchHistorical1mKlines(pair, 30);
+                await addPriceHistory(pair, klines1m);
+                addLog(`[${pair}] Stored ${klines1m.length} 1-minute k-lines.`, 'info');
+                
+                // Fetch 4 hours of high-resolution 15-second candles
+                addLog(`[${pair}] Fetching 4 hours of 1s klines to create 15s candles...`, 'info');
+                const candles15s = await fetchHistoricalHighResCandles(pair, 4);
+                await addPriceHistory(pair, candles15s);
+                addLog(`[${pair}] Stored ${candles15s.length} 15-second candles.`, 'info');
+
+                const latestTimestamp = await getLatestEntryTimestamp(pair);
+                if (latestTimestamp) {
+                    lastFetchTimestampsRef.current[pair] = latestTimestamp;
+                }
+            }
+
+            addLog('Historical data backfill completed for all pairs.', 'info');
+            await refreshPriceHistoryFromDB();
+        } catch (e) {
+            const error = e instanceof Error ? e.message : String(e);
+            addLog(`Failed to backfill historical data: ${error}`, 'error');
+            setIsBinanceConnected(false);
+        }
+    }, [addLog, refreshPriceHistoryFromDB]);
+    
+    const handleClearTimers = () => {
+        if (intervalRef.current) clearInterval(intervalRef.current);
+        intervalRef.current = null;
+    };
 
     const handleGeminiDisconnect = useCallback(() => {
-        if (simulationStatus !== 'stopped') {
-            addLog('Simulation stopped due to Gemini API disconnection.', 'warn');
-        }
+        if (simulationStatus !== 'stopped') addLog('Simulation stopped due to Gemini API disconnection.', 'warn');
+        handleClearTimers();
         setSimulationStatus('stopped');
         setGeminiApiKey('');
         setIsGeminiConnected(false);
@@ -361,52 +476,101 @@ const App: React.FC = () => {
     }, [addLog, simulationStatus]);
     
     const handleBinanceDisconnect = useCallback(() => {
-        if (simulationStatus !== 'stopped') {
-            addLog('Simulation stopped due to Binance API disconnection.', 'warn');
-        }
+        if (simulationStatus !== 'stopped') addLog('Simulation stopped due to Binance API disconnection.', 'warn');
+        handleClearTimers();
         setSimulationStatus('stopped');
-        setBinanceKeys({key: '', secret: ''});
         setIsBinanceConnected(false);
         setLivePrices({});
         setSignals([]);
-        setPriceHistoryLog({});
         addLog('Binance API Disconnected. Price feed stopped.', 'info');
     }, [addLog, simulationStatus]);
     
-    const handlePlay = () => { addLog('Simulation starting...', 'info'); setSimulationStatus('running'); runAnalysis(); };
-    const handlePause = () => { addLog('Simulation paused.', 'info'); setSimulationStatus('paused'); };
-    const handleStop = () => { addLog('Simulation stopped.', 'info'); setSimulationStatus('stopped'); setSignals([]); setAnalysisLog([]); }
+    const handlePlay = () => {
+        addLog('Simulation starting... Performing initial analysis on historical data.', 'info');
+        setSimulationStatus('warming up');
+
+        const initializeSimulation = async () => {
+            try {
+                // The first runAnalysis uses all historical data to prime the bot
+                await runAnalysis();
+                
+                // Transition to running only if the user hasn't stopped it
+                setSimulationStatus(currentStatus => {
+                    if (currentStatus === 'warming up') {
+                        addLog('Initial analysis complete. Live simulation is now running.', 'info');
+                        return 'running';
+                    }
+                    return currentStatus; // Respect if user hit stop/pause
+                });
+            } catch (error) {
+                const errorMessage = error instanceof Error ? error.message : String(error);
+                addLog(`Error during simulation initialization: ${errorMessage}`, 'error');
+                setError(`Failed to start simulation: ${errorMessage}`);
+                setSimulationStatus('stopped');
+            }
+        };
+
+        initializeSimulation();
+    };
+    const handlePause = () => { addLog('Simulation paused.', 'info'); setSimulationStatus('paused'); handleClearTimers(); };
+    const handleStop = () => { addLog('Simulation stopped.', 'info'); setSimulationStatus('stopped'); setSignals([]); setAnalysisLog([]); handleClearTimers(); }
 
     useEffect(() => {
         if (simulationStatus === 'running') {
-            intervalRef.current = window.setInterval(() => runAnalysis(false), SIMULATION_INTERVAL);
-        } else if (intervalRef.current) {
-            clearInterval(intervalRef.current);
-            intervalRef.current = null;
+            intervalRef.current = window.setInterval(() => runAnalysis(), PRICE_FETCH_INTERVAL);
+        } else {
+            handleClearTimers();
         }
-        return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
+        return () => handleClearTimers();
     }, [simulationStatus, runAnalysis]);
 
-    const handleOpenTimeframeTrade = useCallback((pair: string, direction: 'LONG' | 'SHORT') => {
-        const signal = signals.find(s => s.pair === pair);
-        if (!signal || !signal.last_price || !signal.take_profit || !signal.stop_loss) return alert("Signal data incomplete.");
-        if (openTradesRef.current.length >= configRef.current.max_concurrent_trades) return alert("Max concurrent trades reached.");
-        if (openTradesRef.current.some(trade => trade.pair === signal.pair)) return alert("Trade for this pair already open.");
+    const handleTriggerManualAnalysis = async () => {
+        if (!isBinanceConnectedRef.current) {
+            addLog('Cannot trigger manual analysis: Binance not connected.', 'error');
+            return;
+        }
+        addLog('Generating prompt with full history for manual analysis...', 'request');
         
-        const newTrade: Trade = {
-            id: `${signal.pair}-${Date.now()}`, pair: signal.pair, direction: direction, entryPrice: signal.last_price,
-            openedAt: new Date(), takeProfit: signal.take_profit, stopLoss: signal.stop_loss, status: 'pending',
-            initialConfidence: signal.confidence, initialSignalMeta: signal.meta,
-        };
-        setOpenTrades(prev => [newTrade, ...prev]);
-        addLog(`Position for ${signal.pair} (${direction}) opened with status 'pending'.`, 'info');
-    }, [signals, addLog]);
+        const fullPriceHistory = await Object.fromEntries(
+            await Promise.all(config.trading_pairs.map(async pair => [pair, await getFullPriceHistory(pair)]))
+        );
+
+        const livePricesForPrompt = Object.fromEntries(
+            Object.entries(livePrices)
+            .filter(([, value]) => value !== undefined)
+            .map(([key, value]) => [key, value!.close])
+        );
+
+        const prompt = constructGeminiPrompt(config, closedTrades, livePricesForPrompt, fullPriceHistory);
+        setManualAnalysisPrompt(prompt);
+        setIsManualAnalysisModalOpen(true);
+    };
     
-    const handleConfirmTrade = useCallback((tradeId: string) => {
-        setOpenTrades(prev => prev.map(t => t.id === tradeId ? { ...t, status: 'active' } : t));
-        const trade = openTrades.find(t=>t.id === tradeId);
-        if(trade) addLog(`Confirmed trade for ${trade.pair}. Position active.`, 'info');
-    }, [addLog, openTrades]);
+    const handleSubmitManualAnalysis = (responseText: string) => {
+        setIsManualAnalysisModalOpen(false);
+        addLog('Processing manually entered chatbot response...', 'info');
+        setIsLoading(true);
+        setError(null);
+        try {
+            let cleanResponse = responseText.trim();
+            const jsonRegex = /```json\s*([\s\S]*?)\s*```/;
+            const match = cleanResponse.match(jsonRegex);
+            if (match && match[1]) cleanResponse = match[1];
+            
+            const parsedData: unknown = JSON.parse(cleanResponse);
+            if (Array.isArray(parsedData)) {
+                processSignalsAndUpdateState(parsedData as Signal[], 'stopped');
+            } else {
+                throw new Error("Manual analysis response must be a JSON array.");
+            }
+        } catch (e) {
+            const error = e instanceof Error ? e.message : String(e);
+            addLog(`Failed to process manual analysis: ${error}`, 'error', { rawResponse: responseText });
+            setError(`Failed to process manual analysis: ${error}`);
+        } finally {
+            setIsLoading(false);
+        }
+    };
 
     const handleUpdateTrade = useCallback((tradeId: string, updates: Partial<Pick<Trade, 'entryPrice' | 'takeProfit' | 'stopLoss'>>) => {
         setOpenTrades(prev => prev.map(t => t.id === tradeId ? { ...t, ...updates } : t));
@@ -415,12 +579,9 @@ const App: React.FC = () => {
     }, [addLog, openTrades]);
 
     const handleCloseTrade = useCallback((tradeId: string) => {
-        const trade = openTradesRef.current.find(t => t.id === tradeId);
-        if(trade){
-            const signal = signals.find(s => s.pair === trade.pair);
-            closeTrade(trade, signal?.last_price || trade.entryPrice, 'Manual close');
-        }
-    }, [signals, closeTrade]);
+        const trade = openTrades.find(t => t.id === tradeId);
+        if(trade) closeTrade(trade, livePrices[trade.pair]?.close || trade.entryPrice, 'Manual close');
+    }, [openTrades, closeTrade, livePrices]);
     
     const arrayToCsv = (data: any[], columns: {key: string, label: string}[]) => {
         if (data.length === 0) return '';
@@ -464,31 +625,20 @@ const App: React.FC = () => {
         downloadCsv(arrayToCsv(logsToExport.map(({ id, ...rest }) => rest), columns), `terminal-log-${new Date().toISOString().slice(0,10)}.csv`);
     }, [terminalLog]);
     
-    const handleExportPriceHistory = useCallback((pair: string) => {
-        const logToExport = priceHistoryLog[pair];
-        if (!logToExport || logToExport.length === 0) {
-            alert(`No price history available to export for ${pair}.`);
-            return;
+    const handleExportPriceHistory = useCallback(async (pair: string, interval: '1m' | '15s') => {
+        addLog(`Exporting full ${interval} price history for ${pair}...`, 'request');
+        const fullHistory = await getFullPriceHistory(pair, interval);
+        if (!fullHistory || fullHistory.length === 0) {
+            return alert(`No ${interval} price history available to export for ${pair}.`);
         }
-        const columns = [ { key: 'timestamp', label: 'Timestamp' }, { key: 'pair', label: 'Pair' }, { key: 'price', label: 'Price' } ];
-        const reversedLog = [...logToExport].reverse();
-        const filename = `price-history-${pair.replace('/', '_')}-${new Date().toISOString().slice(0,10)}.csv`;
-        downloadCsv(arrayToCsv(reversedLog, columns), filename);
-    }, [priceHistoryLog]);
+        const columns = [ { key: 'timestamp', label: 'Timestamp' }, { key: 'pair', label: 'Pair' }, { key: 'open', label: 'Open' }, { key: 'high', label: 'High' }, { key: 'low', label: 'Low' }, { key: 'close', label: 'Close' }, { key: 'volume', label: 'Volume' }, { key: 'interval', label: 'Interval'} ];
+        const filename = `price-history-${pair.replace('/', '_')}-${interval}-${new Date().toISOString().slice(0,10)}.csv`;
+        downloadCsv(arrayToCsv(fullHistory, columns), filename);
+        addLog(`Successfully exported ${fullHistory.length} records for ${pair} (${interval}).`, 'info');
+    }, [addLog]);
     
     const handleExportPredictionAccuracy = useCallback(() => {
-         const columns = [
-            { key: 'predictionTime', label: 'PredictionTime' },
-            { key: 'pair', label: 'Pair' },
-            { key: 'timeframe', label: 'Timeframe' },
-            { key: 'predictedSignal', label: 'Prediction' },
-            { key: 'startPrice', label: 'StartPrice' },
-            { key: 'status', label: 'Status' },
-            { key: 'endTime', label: 'EndTime' },
-            { key: 'endPrice', label: 'EndPrice' },
-            { key: 'outcome', label: 'Outcome' },
-            { key: 'success', label: 'Success' },
-        ];
+         const columns = [ { key: 'predictionTime', label: 'PredictionTime' }, { key: 'pair', label: 'Pair' }, { key: 'timeframe', label: 'Timeframe' }, { key: 'predictedSignal', label: 'Prediction' }, { key: 'startPrice', label: 'StartPrice' }, { key: 'status', label: 'Status' }, { key: 'endTime', label: 'EndTime' }, { key: 'endPrice', label: 'EndPrice' }, { key: 'outcome', label: 'Outcome' }, { key: 'success', label: 'Success' }, ];
         const data = predictionRecords.map(r => ({ ...r, predictionTime: new Date(r.predictionTime).toISOString(), endTime: r.endTime ? new Date(r.endTime).toISOString() : '' }));
         downloadCsv(arrayToCsv(data, columns), `prediction-accuracy-report-${new Date().toISOString().slice(0,10)}.csv`);
     }, [predictionRecords]);
@@ -511,11 +661,15 @@ const App: React.FC = () => {
                         />
                         <SimulationControl
                             status={simulationStatus}
+                            analysisEngine={analysisEngine}
                             onPlay={handlePlay}
                             onPause={handlePause}
                             onStop={handleStop}
-                            onAdvance={() => runAnalysis(false)}
-                            isDisabled={!isGeminiConnected || !isBinanceConnected || isLoading}
+                            onAdvance={() => runAnalysis()}
+                            onManualAnalysis={handleTriggerManualAnalysis}
+                            onEngineChange={setAnalysisEngine}
+                            isDisabled={!isBinanceConnected || (analysisEngine === 'gemini' && !isGeminiConnected)}
+                            isManualDisabled={!isBinanceConnected || isLoading || !isGeminiConnected}
                         />
                         <LivePrices prices={livePrices} trading_pairs={config.trading_pairs} />
                         <ControlPanel
@@ -538,21 +692,28 @@ const App: React.FC = () => {
                             isLoading={isLoading && signals.length === 0}
                             onOpenTimeframeTrade={handleOpenTimeframeTrade}
                             openTradePairs={openTrades.map(t => t.pair)}
-                            tradeAmountUSD={config.trade_amount_usd}
                         />
                         <OpenPositions openTrades={openTrades} closedTrades={closedTrades} onCloseTrade={handleCloseTrade} onConfirmTrade={handleConfirmTrade} onUpdateTrade={handleUpdateTrade} />
                         <PredictionAccuracy records={predictionRecords} />
                         <AnalysisLog logEntries={analysisLog} onExport={handleExportAnalysisLog} />
                         <PriceHistoryLog 
                             trading_pairs={config.trading_pairs}
-                            logData={priceHistoryLog} 
+                            logData={displayPriceHistory}
+                            logCounts={priceHistoryCounts}
                             onExport={handleExportPriceHistory} 
                             onFetchPrices={handleManualPriceFetch} 
                         />
+                        <BotStrategy />
                     </div>
                 </div>
             </main>
             <Terminal logs={terminalLog} onExport={handleExportTerminalLog} />
+            <ManualAnalysisModal 
+                isOpen={isManualAnalysisModalOpen}
+                onClose={() => setIsManualAnalysisModalOpen(false)}
+                onSubmit={handleSubmitManualAnalysis}
+                prompt={manualAnalysisPrompt}
+            />
         </div>
     );
 };

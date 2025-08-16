@@ -1,4 +1,3 @@
-
 import React from 'react';
 import type { Trade } from '../types';
 import { Card } from './ui/Card';
@@ -30,6 +29,7 @@ export const OpenPositions: React.FC<OpenPositionsProps> = ({ openTrades, closed
                                 <th scope="col" className="px-4 py-3">Pair</th>
                                 <th scope="col" className="px-4 py-3">Direction</th>
                                 <th scope="col" className="px-4 py-3">Status</th>
+                                <th scope="col" className="px-4 py-3">Size (USD)</th>
                                 <th scope="col" className="px-4 py-3">Entry Price</th>
                                 <th scope="col" className="px-4 py-3">Exit Price</th>
                                 <th scope="col" className="px-4 py-3">PNL (USD)</th>

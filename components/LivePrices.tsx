@@ -1,14 +1,17 @@
 import React, { useRef, useEffect } from 'react';
 import { Card } from './ui/Card';
+import type { PriceHistoryLogEntry } from '../types';
 
 interface LivePricesProps {
-    prices: Record<string, number>;
+    prices: Record<string, PriceHistoryLogEntry | undefined>;
     trading_pairs: string[];
 }
 
-const PriceRow: React.FC<{ pair: string, price: number | undefined }> = ({ pair, price }) => {
+const PriceRow: React.FC<{ pair: string, priceData: PriceHistoryLogEntry | undefined }> = ({ pair, priceData }) => {
     const priceRef = useRef<HTMLSpanElement>(null);
-    const prevPriceRef = useRef<number | undefined>(price);
+    const prevPriceRef = useRef<number | undefined>(priceData?.close);
+    
+    const price = priceData?.close;
 
     useEffect(() => {
         if (price !== undefined && priceRef.current) {
@@ -50,7 +53,7 @@ export const LivePrices: React.FC<LivePricesProps> = ({ prices, trading_pairs })
             {trading_pairs.length > 0 ? (
                 <div className="space-y-1">
                     {trading_pairs.map(pair => (
-                        <PriceRow key={pair} pair={pair} price={prices[pair]} />
+                        <PriceRow key={pair} pair={pair} priceData={prices[pair]} />
                     ))}
                 </div>
             ) : (

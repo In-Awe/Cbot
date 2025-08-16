@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from 'react';
 import type { Trade } from '../types';
 import { Button } from './ui/Button';
@@ -79,6 +78,7 @@ export const OpenPositionsRow: React.FC<OpenPositionsRowProps> = ({ trade, onClo
                     {trade.status}
                 </span>
             </td>
+            <td className="px-4 py-3 font-mono">${trade.tradeAmountUSD.toFixed(2)}</td>
             
             {isEditing && !isClosed ? (
                  <>

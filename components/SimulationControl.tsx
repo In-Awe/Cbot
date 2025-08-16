@@ -1,5 +1,5 @@
 import React from 'react';
-import type { SimulationStatus } from '../types';
+import type { SimulationStatus, AnalysisEngine } from '../types';
 import { Card } from './ui/Card';
 import { Button } from './ui/Button';
 import { PlayIcon } from './icons/PlayIcon';
@@ -9,11 +9,15 @@ import { ForwardIcon } from './icons/ForwardIcon';
 
 interface SimulationControlProps {
     status: SimulationStatus;
+    analysisEngine: AnalysisEngine;
     onPlay: () => void;
     onPause: () => void;
     onStop: () => void;
     onAdvance: () => void;
+    onManualAnalysis: () => void;
+    onEngineChange: (engine: AnalysisEngine) => void;
     isDisabled: boolean;
+    isManualDisabled: boolean;
 }
 
 const ControlButton: React.FC<{onClick: () => void, disabled: boolean, children: React.ReactNode, className?: string}> = ({ onClick, disabled, children, className }) => (
@@ -27,18 +31,36 @@ const ControlButton: React.FC<{onClick: () => void, disabled: boolean, children:
 );
 
 
-export const SimulationControl: React.FC<SimulationControlProps> = ({ status, onPlay, onPause, onStop, onAdvance, isDisabled }) => {
+export const SimulationControl: React.FC<SimulationControlProps> = ({ status, analysisEngine, onPlay, onPause, onStop, onAdvance, onManualAnalysis, onEngineChange, isDisabled, isManualDisabled }) => {
     return (
         <Card>
             <h3 className="text-lg font-semibold text-cyan-400 mb-4">Simulation Control</h3>
             <div className="space-y-4">
-                 <div className="flex items-center justify-center bg-gray-900/50 rounded-lg p-2">
+                <div className="flex items-center justify-center bg-gray-900/50 rounded-lg p-2">
                     <p className="text-sm font-medium text-gray-300">
-                        Status: <span className="font-bold text-white capitalize">{status}</span>
+                        Status: <span className={`font-bold text-white capitalize ${status === 'warming up' ? 'text-yellow-400 animate-pulse' : ''}`}>{status}</span>
                     </p>
                 </div>
+                
+                <div className="flex items-center bg-gray-900/50 rounded-lg p-1">
+                    <button 
+                        className={`flex-1 text-xs font-bold py-1.5 rounded ${analysisEngine === 'internal' ? 'bg-cyan-600 text-white' : 'text-gray-300'}`}
+                        onClick={() => onEngineChange('internal')}
+                        disabled={status !== 'stopped'}
+                    >
+                        Internal Bot
+                    </button>
+                    <button 
+                        className={`flex-1 text-xs font-bold py-1.5 rounded ${analysisEngine === 'gemini' ? 'bg-cyan-600 text-white' : 'text-gray-300'}`}
+                        onClick={() => onEngineChange('gemini')}
+                        disabled={status !== 'stopped'}
+                    >
+                        Gemini API
+                    </button>
+                </div>
+
                 <div className="flex gap-2">
-                    {status === 'running' ? (
+                    {status === 'running' || status === 'warming up' ? (
                         <ControlButton onClick={onPause} disabled={isDisabled} className="bg-yellow-600 hover:bg-yellow-500 text-white">
                             <PauseIcon /> Pause
                         </ControlButton>
@@ -47,15 +69,20 @@ export const SimulationControl: React.FC<SimulationControlProps> = ({ status, on
                             <PlayIcon /> {status === 'paused' ? 'Resume' : 'Play'}
                         </ControlButton>
                     )}
-                     <ControlButton onClick={onStop} disabled={isDisabled || status === 'stopped'} className="bg-red-600 hover:bg-red-500 text-white">
+                     <ControlButton onClick={onStop} disabled={status === 'stopped'} className="bg-red-600 hover:bg-red-500 text-white">
                         <StopIcon /> Stop
                     </ControlButton>
                 </div>
-                 {status === 'paused' && (
-                    <Button onClick={onAdvance} disabled={isDisabled} variant="secondary" className="w-full flex items-center justify-center gap-2">
-                        <ForwardIcon /> Advance 1 Tick
+                <div className="space-y-2">
+                    {(status === 'paused' || status === 'stopped') && (
+                        <Button onClick={onAdvance} disabled={isDisabled} variant="secondary" className="w-full flex items-center justify-center gap-2">
+                            <ForwardIcon /> Advance 1 Tick
+                        </Button>
+                    )}
+                    <Button onClick={onManualAnalysis} disabled={isManualDisabled || analysisEngine === 'internal'} variant="secondary" className="w-full">
+                        Manual Gemini Analysis
                     </Button>
-                )}
+                </div>
             </div>
         </Card>
     );

@@ -1,17 +1,32 @@
 export interface StrategyConfig {
     exchange: string;
     trading_pairs: string[];
-    trade_amount_usd: number;
+    total_capital_usd: number;
+    kelly_fraction: number; // This will now be the base fraction
     max_concurrent_trades: number;
-    take_profit_pct: number;
-    stop_loss_pct: number;
     entry_window_s: number;
     exit_timeout_s: number;
-    timeframes: string[];
-    short_ma: number;
-    long_ma: number;
-    rsi_period: number;
+    timeframes: string[]; // Primary timeframe for signals
+
+    // New Regime and Calibration Settings
+    regime_trend_timeframe_h: number; // Timeframe in hours for trend analysis
+    regime_trend_fast_ema: number;
+    regime_trend_slow_ema: number;
+    regime_volatility_atr_period: number;
+    regime_volatility_high_threshold_pct: number; // ATR as % of price
+    regime_volatility_low_threshold_pct: number; // ATR as % of price
 }
+
+export interface MarketRegime {
+    volatility: 'High' | 'Normal' | 'Low';
+    trend: 'Uptrend' | 'Downtrend' | 'Ranging';
+    details: {
+        trend_ema_fast?: number;
+        trend_ema_slow?: number;
+        volatility_atr_pct?: number;
+    }
+}
+
 
 export interface TimeframeAnalysis {
     timeframe: string;
@@ -19,12 +34,13 @@ export interface TimeframeAnalysis {
     confidence: number;
     weight?: number;
     error?: string;
+    details?: Record<string, string | number | MarketRegime>;
 }
 
 export interface Signal {
     pair: string;
     action: 'buy' | 'sell' | 'hold';
-    confidence: number;
+    confidence: number; // This is now the calibrated win probability
     score: number;
     last_price: number | null;
     take_profit: number | null;
@@ -33,6 +49,9 @@ export interface Signal {
     note?: string;
     suggested_take_profit_pct?: number;
     suggested_stop_loss_pct?: number;
+    betSizeUSD?: number;
+    regime?: MarketRegime;
+    calibrated_win_p?: number;
 }
 
 export interface Trade {
@@ -44,6 +63,7 @@ export interface Trade {
     takeProfit: number;
     stopLoss: number;
     status: 'pending' | 'active' | 'closed';
+    tradeAmountUSD: number;
     exitPrice?: number;
     closedAt?: Date;
     pnl?: number;
@@ -61,7 +81,7 @@ export interface AnalysisLogEntry {
     meta: TimeframeAnalysis[];
 }
 
-export type SimulationStatus = 'stopped' | 'running' | 'paused';
+export type SimulationStatus = 'stopped' | 'running' | 'paused' | 'warming up';
 
 export interface TerminalLogEntry {
     id: number;
@@ -72,11 +92,17 @@ export interface TerminalLogEntry {
 }
 
 export interface PriceHistoryLogEntry {
-    id: number;
+    id: number; // Timestamp
     timestamp: Date;
     pair: string;
-    price: number;
+    open: number;
+    high: number;
+    low: number;
+    close: number;
+    volume: number;
+    interval: '1m' | '15s' | '1s';
 }
+
 
 export interface PredictionAccuracyRecord {
     id: string;
@@ -91,3 +117,5 @@ export interface PredictionAccuracyRecord {
     outcome?: 'UP' | 'DOWN' | 'SIDEWAYS';
     success?: boolean;
 }
+
+export type AnalysisEngine = 'gemini' | 'internal';

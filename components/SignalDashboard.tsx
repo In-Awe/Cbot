@@ -1,4 +1,3 @@
-
 import React, { useState } from 'react';
 import type { Signal } from '../types';
 import { SignalCard } from './SignalCard';
@@ -9,7 +8,6 @@ interface SignalDashboardProps {
     isLoading: boolean;
     onOpenTimeframeTrade: (pair: string, direction: 'LONG' | 'SHORT') => void;
     openTradePairs: string[];
-    tradeAmountUSD: number;
 }
 
 const SkeletonCard: React.FC = () => (
@@ -28,7 +26,7 @@ const SkeletonCard: React.FC = () => (
 );
 
 
-export const SignalDashboard: React.FC<SignalDashboardProps> = ({ signals, isLoading, onOpenTimeframeTrade, openTradePairs, tradeAmountUSD }) => {
+export const SignalDashboard: React.FC<SignalDashboardProps> = ({ signals, isLoading, onOpenTimeframeTrade, openTradePairs }) => {
     const [areDetailsExpanded, setAreDetailsExpanded] = useState(false);
     
     const handleToggleDetails = () => setAreDetailsExpanded(prev => !prev);
@@ -58,7 +56,7 @@ export const SignalDashboard: React.FC<SignalDashboardProps> = ({ signals, isLoa
                             isTradeOpen={openTradePairs.includes(signal.pair)}
                             isExpanded={areDetailsExpanded}
                             onToggleDetails={handleToggleDetails}
-                            tradeAmountUSD={tradeAmountUSD}
+                            tradeAmountUSD={signal.betSizeUSD || 0}
                         />
                     ))}
                 </div>

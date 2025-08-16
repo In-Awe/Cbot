@@ -1,4 +1,3 @@
-
 import { GoogleGenAI, Type } from "@google/genai";
 import type { StrategyConfig, Signal, Trade, PriceHistoryLogEntry } from '../types';
 
@@ -28,14 +27,8 @@ class BasicStrategyV2:
     def __init__(self, config: StrategyConfig):
         self.config = config
     
-    # The logic below is a simplified representation of how signals are generated.
-    # The key is the multi-timeframe analysis combining Moving Averages and RSI.
     def analyze_pair(self, pair: str) -> Dict[str, Any]:
-        # This is a placeholder for the complex analysis logic.
-        # In the real script, it would fetch data, compute indicators, and evaluate.
-        # The AI should simulate this process.
         results = {}
-        # ... logic to produce a result dictionary ...
         return results
 
     def generate_signals(self) -> List[Dict[str, Any]]:
@@ -88,67 +81,83 @@ const withRetry = async <T>(fn: () => Promise<T>, retries = 3, initialDelay = 10
             return await fn();
         } catch (error) {
             attempt++;
-            if (attempt >= retries) {
-                throw error;
-            }
+            if (attempt >= retries) throw error;
             const errorString = String(error);
             const isRateLimitError = errorString.includes("429") || errorString.toLowerCase().includes("quota");
-            
             const backoff = initialDelay * Math.pow(2, attempt) + Math.random() * 1000;
-            
             const waitTime = isRateLimitError ? Math.max(backoff, 5000) : backoff;
-
-            console.warn(
-                `${isRateLimitError ? 'Rate limit exceeded' : 'API call failed'}. ` +
-                `Retrying in ${Math.round(waitTime / 1000)}s... (Attempt ${attempt}/${retries})`
-            );
+            console.warn(`API call failed (Attempt ${attempt}/${retries}). Retrying in ${Math.round(waitTime / 1000)}s...`);
             await delay(waitTime);
         }
     }
 };
 
-export const generateTradingSignals = async (
-    config: StrategyConfig, 
-    apiKey: string, 
+const summarizePriceHistory = (history: PriceHistoryLogEntry[]) => {
+    if (history.length === 0) return null;
+
+    const data1m = history.filter(d => d.interval === '1m');
+    const data15s = history.filter(d => d.interval === '15s');
+
+    const getStats = (data: PriceHistoryLogEntry[]) => {
+        if (data.length === 0) return null;
+        const prices = data.map(d => d.close);
+        const returns = prices.slice(1).map((p, i) => (p - prices[i]) / prices[i]);
+        const stdDev = Math.sqrt(returns.map(r => Math.pow(r - (returns.reduce((a,b) => a+b, 0) / returns.length), 2)).reduce((a,b) => a+b, 0) / returns.length);
+        
+        return {
+            records: data.length,
+            startTime: new Date(data[data.length - 1].timestamp).toISOString(),
+            endTime: new Date(data[0].timestamp).toISOString(),
+            low: Math.min(...prices),
+            high: Math.max(...prices),
+            avgVolume: data.map(d=>d.volume).reduce((a,b)=>a+b, 0) / data.length,
+            volatility: stdDev * Math.sqrt(data.length) // Simplified annualized volatility estimate
+        };
+    };
+
+    return {
+        '1m_summary': getStats(data1m),
+        '15s_summary': getStats(data15s),
+    };
+};
+
+export const constructGeminiPrompt = (
+    config: StrategyConfig,
     tradeHistory: Trade[],
     livePrices: Record<string, number> | null,
     priceHistory: Record<string, PriceHistoryLogEntry[]>
-): Promise<Signal[]> => {
-    if (!apiKey) {
-        throw new Error("Gemini API key is required.");
-    }
-    
-    const ai = new GoogleGenAI({ apiKey });
-
-    const summarizedHistory = tradeHistory
+): string => {
+     const summarizedHistory = tradeHistory
         .slice(0, 50)
         .map(t => ({
             pair: t.pair,
             direction: t.direction,
             outcome: t.pnl && t.pnl > 0 ? 'WIN' : t.pnl && t.pnl < 0 ? 'LOSS' : 'BREAK_EVEN',
             pnl_usd: t.pnl?.toFixed(2),
-            initial_confidence: t.initialConfidence?.toFixed(2),
-            trigger_signals: t.initialSignalMeta
-                ?.filter(m => m.signal === 'bull' || m.signal === 'bear')
-                .map(m => `${m.timeframe}:${m.signal}`)
-                .join(', ')
         }));
 
-    const priceHistoryForPrompt = config.trading_pairs.reduce((acc, pair) => {
-        if (priceHistory[pair]) {
-            acc[pair] = priceHistory[pair].slice(0, 50).map(entry => ({
-                t: new Date(entry.timestamp).toLocaleTimeString('en-US', { hour12: false }),
-                p: entry.price.toFixed(4)
-            })).reverse();
-        }
-        return acc;
-    }, {} as Record<string, any>);
+    const fullHistorySummary: Record<string, any> = {};
+    const recentHistoryForPrompt: Record<string, any> = {};
 
-    const prompt = `
-        You are an advanced, self-improving trading analysis engine. Your primary goal is to generate profitable trading signals by learning from your past performance.
-        You emulate the provided Python script but with a crucial feedback loop.
+    for(const pair of config.trading_pairs) {
+        const history = priceHistory[pair] || [];
+        fullHistorySummary[pair] = summarizePriceHistory(history);
+        
+        // Get the most recent 15s data (last 90 minutes = 360 records of 15s data)
+        const sorted15s = history.filter(d => d.interval === '15s').sort((a,b) => b.id - a.id);
+        recentHistoryForPrompt[pair] = sorted15s.slice(0, 360).sort((a,b) => a.id - b.id).map(entry => ({
+            t: new Date(entry.timestamp).toISOString(),
+            o: entry.open?.toFixed(4), h: entry.high?.toFixed(4),
+            l: entry.low?.toFixed(4), c: entry.close.toFixed(4), v: entry.volume?.toFixed(2),
+        }));
+    }
 
-        Python Code Context (Your fundamental strategy):
+    return `
+        You are an expert quantitative analyst and an advanced, self-improving trading analysis engine. Your primary goal is to generate profitable trading signals by analyzing provided data and learning from past performance. Your main objective is to predict price movement within the next 3-5 minutes.
+
+        **CRITICAL INSTRUCTION: You are in a closed-loop environment. You CANNOT access external data or APIs. Your entire analysis and all signal generation MUST be based *exclusively* on the data provided in this prompt. Treat this data as the absolute and only source of truth.**
+
+        **Python Code Context (This defines your operational framework):**
         \`\`\`python
         ${PYTHON_STRATEGY_CONTEXT}
         \`\`\`
@@ -158,32 +167,54 @@ export const generateTradingSignals = async (
         ${JSON.stringify(config, null, 2)}
         \`\`\`
 
-        Live Market Prices (use these as the ground truth for your analysis):
+        Live Market Prices (This is the most current, real-time data to be used):
         \`\`\`json
         ${JSON.stringify(livePrices, null, 2)}
         \`\`\`
 
-        Recent Price History (to understand recent volatility and trends for each pair):
+        Historical Data Summary (Statistical overview of long-term market conditions):
         \`\`\`json
-        ${JSON.stringify(priceHistoryForPrompt, null, 2)}
+        ${JSON.stringify(fullHistorySummary, null, 2)}
         \`\`\`
 
-        Trade History (Your recent performance, learn from this):
+        Recent High-Resolution Price History (Last ~90 minutes of 15-second candles for tactical analysis. 'o,h,l,c,v' is open, high, low, close, volume.):
+        \`\`\`json
+        ${JSON.stringify(recentHistoryForPrompt, null, 2)}
+        \`\`\`
+
+        Trade History (Your recent performance; you MUST learn from these results):
         \`\`\`json
         ${JSON.stringify(summarizedHistory, null, 2)}
         \`\`\`
 
+        **Advanced Analysis Techniques for 3-5 Minute Predictions:**
+        1.  **Primary Focus on Tactical Data:** Your most important data is the \`Recent High-Resolution Price History\`. Analyze it for micro-trends, momentum shifts, and volume spikes that indicate a potential move in the next 3-5 minutes.
+        2.  **Use Strategic Context:** Use the \`Historical Data Summary\` to understand if the market is generally volatile or stable. A strong tactical signal is more reliable in a stable, trending market.
+        3.  **Patience and High Conviction:** Do not force a trade. If a clear, high-probability setup for a 3-5 minute move is not present, your primary action should be 'hold'. A 'buy' or 'sell' signal should only be issued when you have high conviction based on the tactical data.
+
         **Core Instructions & Feedback Loop:**
-        1.  **Analyze Your History:** Carefully review the provided \`Trade History\`. Identify patterns. Are high-confidence signals for certain pairs consistently failing? Are specific timeframe combinations (e.g., '1h:bull' with '5m:bull') leading to wins?
-        1.5. **Analyze Price History:** Use the 'Recent Price History' for the specific pair you are analyzing to gauge recent momentum, volatility, and identify micro-trends. This is crucial context for your technical indicator analysis.
-        2.  **Adapt and Calibrate:** Based on your analysis of both trade and price history, you MUST adjust your internal strategy. If your past 'buy' signals with >80% confidence for MATIC/USDT have been losing, you must lower your confidence for similar signals in the future or even issue a 'hold'. Conversely, if a pattern is consistently profitable, increase your confidence when you see it again.
-        2.5. **Optimize Risk Parameters:** Based on your analysis of volatility and past performance for a specific pair, if you determine the user's configured Take Profit or Stop Loss percentages are suboptimal, you may suggest improved values in the 'suggested_take_profit_pct' and 'suggested_stop_loss_pct' fields. Only provide suggestions if you have high confidence that they will improve profitability.
-        3.  **Generate New Signals:** For each pair in the user's \`trading_pairs\`, generate a new signal object based on your adapted strategy.
-        4.  **Calculate Risk:** Calculate \`take_profit\` and \`stop_loss\` based on the provided live \`last_price\` and the config percentages.
-        5.  **Provide Detailed Rationale:** Populate the \`meta\` field with your analysis for each timeframe. The \`last_price\` in your response for each signal MUST MATCH the price provided in the "Live Market Prices" section.
-        6.  **Factor in Risk/Reward:** Your final \`confidence\` score must reflect the risk/reward ratio from \`take_profit_pct\` and \`stop_loss_pct\`. A wider stop-loss should decrease confidence.
-        7.  **Output JSON Only:** The final output must be ONLY a valid JSON array conforming to the schema. No explanations.
+        1.  **Data Primacy**: Your entire analysis for each trading pair MUST originate from the JSON data blocks provided above.
+        2.  **Analyze Trade History:** Correlate wins and losses with the market regime you can infer from the historical summary and patterns from the recent history. Your new signals must reflect these learnings.
+        3.  **Adapt Your Strategy:** Based on your analysis, calibrate your internal logic. If past 'buy' signals failed during high volatility (seen in summary), be more cautious now. This adaptation is mandatory.
+        4.  **Optimize Risk Parameters:** You may suggest improved values for 'take_profit_pct' and 'stop_loss_pct' if you have high confidence they will improve profitability.
+        5.  **Generate Signals:** For each pair in the user's \`trading_pairs\`, generate a new signal object based on your adapted strategy.
+        6.  **Calculate TP/SL:** Calculate the final \`take_profit\` and \`stop_loss\` price levels using the provided \`last_price\` from the "Live Market Prices" data and the config percentages.
+        7.  **Provide Rationale:** Populate the \`meta\` field with your analysis for each timeframe. The \`last_price\` in your response for each signal MUST EXACTLY MATCH the price from the "Live Market Prices" data.
+        8.  **Output JSON Only:** The final output must be ONLY a valid JSON array conforming to the schema. No commentary or explanations outside the JSON structure.
     `;
+};
+
+export const generateTradingSignals = async (
+    config: StrategyConfig, 
+    apiKey: string, 
+    tradeHistory: Trade[],
+    livePrices: Record<string, number> | null,
+    priceHistory: Record<string, PriceHistoryLogEntry[]>
+): Promise<Signal[]> => {
+    if (!apiKey) throw new Error("Gemini API key is required.");
+    
+    const ai = new GoogleGenAI({ apiKey });
+    const prompt = constructGeminiPrompt(config, tradeHistory, livePrices, priceHistory);
 
     const generate = () => ai.models.generateContent({
         model: "gemini-2.5-flash",
@@ -191,7 +222,7 @@ export const generateTradingSignals = async (
         config: {
             responseMimeType: "application/json",
             responseSchema: responseSchema,
-            temperature: 0.5,
+            temperature: 0.4,
         },
     });
 
@@ -199,12 +230,9 @@ export const generateTradingSignals = async (
         const response = await withRetry(generate);
         const jsonText = response.text.trim();
         return JSON.parse(jsonText) as Signal[];
-
     } catch (e) {
-        console.error("Error generating signals from Gemini API after retries:", e);
-        if (e instanceof Error) {
-            throw e;
-        }
+        console.error("Error generating signals from Gemini API:", e);
+        if (e instanceof Error) throw e;
         throw new Error("Failed to parse or receive data from Gemini API.");
     }
 };

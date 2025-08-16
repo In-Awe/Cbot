@@ -4,7 +4,7 @@ import { Card } from './ui/Card';
 import { Button } from './ui/Button';
 import { Input } from './ui/Input';
 import { Slider } from './ui/Slider';
-import { AVAILABLE_TIMEFRAMES } from '../constants';
+import { AVAILABLE_TIMEFRAMES, COMMON_TRADING_PAIRS } from '../constants';
 
 interface ControlPanelProps {
     initialConfig: StrategyConfig;
@@ -27,7 +27,9 @@ const Label: React.FC<{ htmlFor: string, children: React.ReactNode, tooltip?: st
 
 export const ControlPanel: React.FC<ControlPanelProps> = ({ initialConfig, onConfigChange, onAnalyze, isLoading, isSimulating }) => {
     const [localConfig, setLocalConfig] = useState(initialConfig);
-
+    const [pairInput, setPairInput] = useState('');
+    const [suggestions, setSuggestions] = useState<string[]>([]);
+    
     useEffect(() => {
         onConfigChange(localConfig);
     }, [localConfig, onConfigChange]);
@@ -36,7 +38,6 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({ initialConfig, onCon
         setLocalConfig(initialConfig);
     }, [initialConfig]);
 
-
     const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         const { name, value, type } = e.target;
         setLocalConfig(prev => ({
@@ -44,10 +45,28 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({ initialConfig, onCon
             [name]: type === 'number' ? parseFloat(value) : value,
         }));
     };
+
+    const handlePairInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const value = e.target.value.toUpperCase();
+        setPairInput(value);
+        if (value) {
+            const filtered = COMMON_TRADING_PAIRS.filter(p => p.startsWith(value) && !localConfig.trading_pairs.includes(p));
+            setSuggestions(filtered.slice(0, 5));
+        } else {
+            setSuggestions([]);
+        }
+    };
     
-    const handleStringArrayChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-        const { name, value } = e.target;
-        setLocalConfig(prev => ({ ...prev, [name]: value.split(',').map(s => s.trim().toUpperCase()).filter(Boolean) }));
+    const addPair = (pair: string) => {
+        if (pair && !localConfig.trading_pairs.includes(pair)) {
+            setLocalConfig(prev => ({ ...prev, trading_pairs: [...prev.trading_pairs, pair] }));
+        }
+        setPairInput('');
+        setSuggestions([]);
+    };
+
+    const removePair = (pairToRemove: string) => {
+        setLocalConfig(prev => ({...prev, trading_pairs: prev.trading_pairs.filter(p => p !== pairToRemove)}));
     };
 
     const handleTimeframeChange = (timeframe: string) => {
@@ -59,33 +78,48 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({ initialConfig, onCon
         });
     };
 
-    const handleSubmit = (e: React.FormEvent) => {
-        e.preventDefault();
-        onAnalyze();
-    };
-
     return (
         <Card>
             <h2 className="text-2xl font-bold text-gray-100 mb-6">Strategy Configuration</h2>
-            <form onSubmit={handleSubmit} className="space-y-6">
+            <form className="space-y-6">
                 <div>
                     <SectionTitle>Market & Risk</SectionTitle>
                     <div className="space-y-4">
-                        <div>
-                            <Label htmlFor="trading_pairs">Trading Pairs (comma-separated)</Label>
+                        <div className="relative">
+                            <Label htmlFor="trading_pairs">Trading Pairs</Label>
+                             <div className="flex flex-wrap gap-2 p-2 bg-gray-700/50 border border-gray-600 rounded-md mb-2 min-h-[42px]">
+                                {localConfig.trading_pairs.map(pair => (
+                                    <span key={pair} className="flex items-center gap-2 bg-cyan-600/50 text-cyan-100 text-xs font-semibold px-2 py-1 rounded">
+                                        {pair}
+                                        {!isSimulating && (
+                                            <button type="button" onClick={() => removePair(pair)} className="text-cyan-200 hover:text-white">&times;</button>
+                                        )}
+                                    </span>
+                                ))}
+                            </div>
                             <Input
-                                id="trading_pairs"
-                                name="trading_pairs"
-                                value={localConfig.trading_pairs.join(', ')}
-                                onChange={handleStringArrayChange}
-                                placeholder="ETH/USDT, BTC/USDT"
+                                id="trading_pairs_input"
+                                name="trading_pairs_input"
+                                value={pairInput}
+                                onChange={handlePairInputChange}
+                                onKeyDown={(e) => { if (e.key === 'Enter' && pairInput) { e.preventDefault(); addPair(pairInput); } }}
+                                placeholder="Type to add a pair..."
                                 disabled={isSimulating}
                             />
+                            {suggestions.length > 0 && (
+                                <ul className="absolute z-10 w-full bg-gray-800 border border-gray-600 rounded-md mt-1 max-h-40 overflow-y-auto">
+                                    {suggestions.map(s => (
+                                        <li key={s} onClick={() => addPair(s)} className="px-3 py-2 text-sm text-gray-200 cursor-pointer hover:bg-gray-700">
+                                            {s}
+                                        </li>
+                                    ))}
+                                </ul>
+                            )}
                         </div>
                         <div className="grid grid-cols-2 gap-4">
                             <div>
-                                <Label htmlFor="trade_amount_usd">Trade Amount (USD)</Label>
-                                <Input id="trade_amount_usd" name="trade_amount_usd" type="number" value={localConfig.trade_amount_usd} onChange={handleInputChange} disabled={isSimulating}/>
+                                <Label htmlFor="total_capital_usd">Total Capital (USD)</Label>
+                                <Input id="total_capital_usd" name="total_capital_usd" type="number" value={localConfig.total_capital_usd} onChange={handleInputChange} disabled={isSimulating}/>
                             </div>
                             <div>
                                 <Label htmlFor="max_concurrent_trades">Max Open Trades</Label>
@@ -93,35 +127,29 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({ initialConfig, onCon
                             </div>
                         </div>
                         <div>
-                            <Label htmlFor="take_profit_pct">Take Profit ({localConfig.take_profit_pct}%)</Label>
-                            <Slider id="take_profit_pct" name="take_profit_pct" min="0.1" max="10" step="0.1" value={localConfig.take_profit_pct} onChange={handleInputChange} disabled={isSimulating}/>
-                        </div>
-                        <div>
-                            <Label htmlFor="stop_loss_pct">Stop Loss ({localConfig.stop_loss_pct}%)</Label>
-                            <Slider id="stop_loss_pct" name="stop_loss_pct" min="0.1" max="10" step="0.1" value={localConfig.stop_loss_pct} onChange={handleInputChange} disabled={isSimulating}/>
+                            <Label htmlFor="kelly_fraction">Base Kelly Fraction ({localConfig.kelly_fraction})</Label>
+                            <Slider id="kelly_fraction" name="kelly_fraction" min="0.1" max="1" step="0.05" value={localConfig.kelly_fraction} onChange={handleInputChange} disabled={isSimulating}/>
                         </div>
                     </div>
                 </div>
 
+                 <div>
+                    <SectionTitle>Regime Analysis</SectionTitle>
+                     <div className="grid grid-cols-2 gap-x-4 gap-y-3">
+                         <div><Label htmlFor="regime_trend_timeframe_h">Trend TF (Hours)</Label><Input id="regime_trend_timeframe_h" name="regime_trend_timeframe_h" type="number" value={localConfig.regime_trend_timeframe_h} onChange={handleInputChange} disabled={isSimulating}/></div>
+                         <div><Label htmlFor="regime_volatility_atr_period">ATR Period</Label><Input id="regime_volatility_atr_period" name="regime_volatility_atr_period" type="number" value={localConfig.regime_volatility_atr_period} onChange={handleInputChange} disabled={isSimulating}/></div>
+                         <div><Label htmlFor="regime_trend_fast_ema">Fast EMA</Label><Input id="regime_trend_fast_ema" name="regime_trend_fast_ema" type="number" value={localConfig.regime_trend_fast_ema} onChange={handleInputChange} disabled={isSimulating}/></div>
+                         <div><Label htmlFor="regime_trend_slow_ema">Slow EMA</Label><Input id="regime_trend_slow_ema" name="regime_trend_slow_ema" type="number" value={localConfig.regime_trend_slow_ema} onChange={handleInputChange} disabled={isSimulating}/></div>
+                         <div><Label htmlFor="regime_volatility_high_threshold_pct">High Vol %</Label><Input id="regime_volatility_high_threshold_pct" name="regime_volatility_high_threshold_pct" type="number" step="0.1" value={localConfig.regime_volatility_high_threshold_pct} onChange={handleInputChange} disabled={isSimulating}/></div>
+                         <div><Label htmlFor="regime_volatility_low_threshold_pct">Low Vol %</Label><Input id="regime_volatility_low_threshold_pct" name="regime_volatility_low_threshold_pct" type="number" step="0.1" value={localConfig.regime_volatility_low_threshold_pct} onChange={handleInputChange} disabled={isSimulating}/></div>
+                     </div>
+                </div>
+
                 <div>
-                    <SectionTitle>Technical Indicators</SectionTitle>
+                    <SectionTitle>Bot Settings</SectionTitle>
                      <div className="space-y-4">
-                        <div className="grid grid-cols-2 gap-4">
-                             <div>
-                                <Label htmlFor="short_ma">Short MA Period</Label>
-                                <Input id="short_ma" name="short_ma" type="number" step="1" value={localConfig.short_ma} onChange={handleInputChange} disabled={isSimulating}/>
-                            </div>
-                            <div>
-                                <Label htmlFor="long_ma">Long MA Period</Label>
-                                <Input id="long_ma" name="long_ma" type="number" step="1" value={localConfig.long_ma} onChange={handleInputChange} disabled={isSimulating}/>
-                            </div>
-                        </div>
                         <div>
-                            <Label htmlFor="rsi_period">RSI Period</Label>
-                            <Input id="rsi_period" name="rsi_period" type="number" step="1" value={localConfig.rsi_period} onChange={handleInputChange} disabled={isSimulating}/>
-                        </div>
-                        <div>
-                           <Label htmlFor="timeframes">Analysis Timeframes</Label>
+                           <Label htmlFor="timeframes">Signal Timeframe (Primary)</Label>
                             <div className="grid grid-cols-4 gap-2 mt-2">
                                 {AVAILABLE_TIMEFRAMES.map(tf => (
                                     <button
@@ -143,7 +171,7 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({ initialConfig, onCon
                     </div>
                 </div>
                 
-                <Button type="submit" className="w-full" variant="secondary">
+                <Button type="button" onClick={onAnalyze} className="w-full" variant="secondary">
                     Generate Performance Report
                 </Button>
             </form>

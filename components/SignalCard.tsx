@@ -22,13 +22,62 @@ const getActionClasses = (action: 'buy' | 'sell' | 'hold') => {
     }
 };
 
-const getSignalChipClasses = (signal: TimeframeAnalysis['signal']) => {
-    switch (signal) {
-        case 'bull': return 'bg-green-500/20 text-green-300';
-        case 'bear': return 'bg-red-500/20 text-red-300';
-        default: return 'bg-gray-500/20 text-gray-300';
+const RegimeInfo: React.FC<{ regime: Signal['regime'] }> = ({ regime }) => {
+    if (!regime) return null;
+    return (
+        <div className="flex justify-between items-center text-xs mt-3 pt-3 border-t border-gray-700/50">
+            <div className="text-center px-2">
+                <span className="text-gray-400 block">Trend</span>
+                <span className={`font-bold ${regime.trend === 'Uptrend' ? 'text-green-400' : regime.trend === 'Downtrend' ? 'text-red-400' : 'text-yellow-400'}`}>
+                    {regime.trend}
+                </span>
+            </div>
+            <div className="text-center px-2">
+                <span className="text-gray-400 block">Volatility</span>
+                <span className={`font-bold ${regime.volatility === 'High' ? 'text-red-400' : regime.volatility === 'Low' ? 'text-green-400' : 'text-yellow-400'}`}>
+                    {regime.volatility}
+                </span>
+            </div>
+        </div>
+    );
+};
+
+const IndicatorDetails: React.FC<{ details: TimeframeAnalysis['details'] }> = ({ details }) => {
+    if (!details) return null;
+    
+    const getVal = (key: string): number | undefined => {
+        const val = details[key];
+        return typeof val === 'number' ? val : undefined;
     }
-}
+
+    const rsi = getVal('rsi');
+    const ema50 = getVal('ema50');
+    const ema100 = getVal('ema100');
+    const macdLine = getVal('macdLine');
+    const signalLine = getVal('signalLine');
+
+    const indicators = [
+        { name: 'EMA Cross', value: `50: ${ema50?.toFixed(2) ?? '...'}`, passBuy: ema50 && ema100 ? ema50 > ema100 : false, passSell: ema50 && ema100 ? ema50 < ema100 : false },
+        { name: 'RSI', value: rsi?.toFixed(2) ?? '...', passBuy: rsi ? rsi > 55 : false, passSell: rsi ? rsi < 45 : false },
+        { name: 'MACD Cross', value: `M: ${macdLine?.toFixed(4) ?? '...'}`, passBuy: macdLine && signalLine ? macdLine > signalLine : false, passSell: macdLine && signalLine ? macdLine < signalLine : false },
+    ];
+
+    return (
+        <div className="space-y-1.5 text-xs">
+            {indicators.map(ind => (
+                <div key={ind.name} className="grid grid-cols-4 items-center gap-2">
+                    <span className="text-gray-400 col-span-1">{ind.name}</span>
+                    <span className="font-mono text-gray-200 col-span-2">{ind.value}</span>
+                    <div className="flex gap-1 justify-end">
+                        <span className={`w-4 h-4 rounded-full flex items-center justify-center text-white font-bold text-[10px] ${ind.passBuy ? 'bg-green-500' : 'bg-gray-600/50'}`} title="Buy condition met">B</span>
+                        <span className={`w-4 h-4 rounded-full flex items-center justify-center text-white font-bold text-[10px] ${ind.passSell ? 'bg-red-500' : 'bg-gray-600/50'}`} title="Sell condition met">S</span>
+                    </div>
+                </div>
+            ))}
+        </div>
+    );
+};
+
 
 export const SignalCard: React.FC<SignalCardProps> = ({ signal, onOpenTimeframeTrade, isTradeOpen, isExpanded, onToggleDetails, tradeAmountUSD }) => {
     const actionClasses = getActionClasses(signal.action);
@@ -62,16 +111,16 @@ export const SignalCard: React.FC<SignalCardProps> = ({ signal, onOpenTimeframeT
 
                 <div className="space-y-3 text-sm">
                     <div className="flex justify-between items-center">
-                        <span className="text-gray-400">Confidence</span>
+                        <span className="text-gray-400">Calibrated P(Win)</span>
                         <div className="w-1/2 bg-gray-700 rounded-full h-2.5">
-                            <div className="bg-cyan-400 h-2.5 rounded-full" style={{ width: `${Math.round(signal.confidence * 100)}%` }}></div>
+                            <div className="bg-cyan-400 h-2.5 rounded-full" style={{ width: `${Math.round((signal.calibrated_win_p || 0) * 100)}%` }}></div>
                         </div>
-                        <span className="font-semibold text-gray-200">{Math.round(signal.confidence * 100)}%</span>
+                        <span className="font-semibold text-gray-200">{Math.round((signal.calibrated_win_p || 0) * 100)}%</span>
                     </div>
                      <div className="flex justify-between items-center">
                         <span className="text-gray-400">Take Profit</span>
                         <div className="text-right">
-                            <span className="font-mono text-green-400">${signal.take_profit?.toFixed(4)}</span>
+                            <span className="font-mono text-green-400">${signal.take_profit?.toFixed(4) ?? '...'}</span>
                             {potentialProfitUSD !== 0 && (
                                 <span className="ml-2 text-xs text-green-500/80">({potentialProfitUSD > 0 ? '+' : ''}{potentialProfitUSD.toFixed(2)} USD)</span>
                             )}
@@ -80,7 +129,7 @@ export const SignalCard: React.FC<SignalCardProps> = ({ signal, onOpenTimeframeT
                     <div className="flex justify-between items-center">
                         <span className="text-gray-400">Stop Loss</span>
                         <div className="text-right">
-                            <span className="font-mono text-red-400">${signal.stop_loss?.toFixed(4)}</span>
+                            <span className="font-mono text-red-400">${signal.stop_loss?.toFixed(4) ?? '...'}</span>
                              {potentialLossUSD !== 0 && (
                                 <span className="ml-2 text-xs text-red-500/80">({potentialLossUSD.toFixed(2)} USD)</span>
                             )}
@@ -88,46 +137,31 @@ export const SignalCard: React.FC<SignalCardProps> = ({ signal, onOpenTimeframeT
                     </div>
                     {signal.note && <p className="text-xs text-yellow-500/80 pt-2 italic">Note: {signal.note}</p>}
                     
-                    {(signal.suggested_take_profit_pct || signal.suggested_stop_loss_pct) && (
-                        <div className="border-t border-cyan-500/20 pt-3 mt-3 space-y-1">
-                             {signal.suggested_take_profit_pct && (
-                                <p className="text-xs text-cyan-300/90 text-center">
-                                    AI Suggests TP: <span className="font-bold">{signal.suggested_take_profit_pct.toFixed(2)}%</span>
-                                </p>
-                            )}
-                             {signal.suggested_stop_loss_pct && (
-                                <p className="text-xs text-cyan-300/90 text-center">
-                                    AI Suggests SL: <span className="font-bold">{signal.suggested_stop_loss_pct.toFixed(2)}%</span>
-                                </p>
-                            )}
-                        </div>
-                    )}
+                    <RegimeInfo regime={signal.regime} />
                 </div>
             </div>
 
             <div className="mt-5">
                 {isExpanded && (
-                    <div className="mb-5 border-t border-gray-700 pt-4 animate-fade-in">
-                        <h4 className="font-semibold mb-2 text-gray-300">Timeframe Analysis</h4>
-                        <div className="space-y-2 text-xs">
-                            {signal.meta.map((analysis) => (
-                                <div key={analysis.timeframe} className="flex justify-between items-center bg-gray-800/50 p-1.5 rounded gap-2">
-                                    <span className="font-medium text-gray-400 w-10">{analysis.timeframe}</span>
-                                    <span className={`px-2 py-0.5 rounded text-center capitalize ${getSignalChipClasses(analysis.signal)}`}>{analysis.signal}</span>
-                                    <span className="text-gray-300 w-20 text-right">Conf: {(analysis.confidence * 100).toFixed(0)}%</span>
-                                     {(analysis.signal === 'bull' || analysis.signal === 'bear') && (
-                                        <Button
-                                            onClick={() => onOpenTimeframeTrade(signal.pair, analysis.signal === 'bull' ? 'LONG' : 'SHORT')}
-                                            disabled={isTradeOpen}
-                                            variant={analysis.signal === 'bull' ? 'primary' : 'danger'}
-                                            className="py-1 px-2 text-[10px] flex-shrink-0"
-                                        >
-                                            {isTradeOpen ? 'Open' : `Open ${analysis.signal === 'bull' ? 'Long' : 'Short'}`}
-                                        </Button>
-                                    )}
-                                </div>
-                            ))}
-                        </div>
+                    <div className="mb-5 border-t border-gray-700/50 pt-4 animate-fade-in space-y-4">
+                         <div>
+                             <h4 className="font-semibold mb-2 text-gray-300 text-sm">Live Indicator State</h4>
+                             <IndicatorDetails details={signal.meta[0]?.details} />
+                         </div>
+
+                        {(signal.action === 'buy' || signal.action === 'sell') && (
+                             <div>
+                                <h4 className="font-semibold mb-2 text-gray-300 text-sm">Manual Trade</h4>
+                                 <Button
+                                    onClick={() => onOpenTimeframeTrade(signal.pair, signal.action === 'buy' ? 'LONG' : 'SHORT')}
+                                    disabled={isTradeOpen}
+                                    variant={signal.action === 'buy' ? 'primary' : 'danger'}
+                                    className="w-full"
+                                >
+                                    {isTradeOpen ? 'Position Open' : `Open ${signal.action === 'buy' ? 'LONG' : 'SHORT'} Trade`}
+                                </Button>
+                            </div>
+                        )}
                     </div>
                 )}
                 <div className="flex items-center gap-2">
