@@ -1,75 +1,57 @@
-import type { PriceHistoryLogEntry, StrategyConfig, Signal, TimeframeAnalysis, MarketRegime, Trade } from '../types';
-import { calculateEMA, calculateRSI, calculateMACD, calculateATR } from './ta';
-import { BOT_TIMEFRAMES } from '../constants';
 
-// --- TYPE DEFINITIONS ---
-interface TFSignal {
-    timeframe_min: number;
-    probability: number;
-    score: number;
-    last_signal: 'bull' | 'bear' | 'hold';
-    samples: number;
+import type { PriceHistoryLogEntry, StrategyConfig, PendingOrder, Trade } from '../types';
+import { calculateEMA, calculateBollingerBands } from './ta';
+
+// --- PER-ASSET CALIBRATED PROFILES ---
+const AssetProfiles: Record<string, any> = {
+    'XRP/USDT': {
+        MACRO_EMA_PERIOD: 35,
+        BBW_SQUEEZE_THRESHOLD: 0.015,
+        TRADE_RISK_PERCENT: 0.03,
+    },
+    'SOL/USDT': {
+        MACRO_EMA_PERIOD: 50,
+        BBW_SQUEEZE_THRESHOLD: 0.008,
+        TRADE_RISK_PERCENT: 0.05,
+    },
+    'BNB/USDT': {
+        MACRO_EMA_PERIOD: 50,
+        BBW_SQUEEZE_THRESHOLD: 0.011,
+        TRADE_RISK_PERCENT: 0.05,
+    },
+    // Default profile
+    'DEFAULT': {
+        MACRO_EMA_PERIOD: 50,
+        BBW_SQUEEZE_THRESHOLD: 0.010,
+        TRADE_RISK_PERCENT: 0.04,
+    }
+};
+
+interface IndicatorData {
+    candles: PriceHistoryLogEntry[];
+    ema?: number[];
+    bbands?: { middle: number[], upper: number[], lower: number[], bbw: number[] };
 }
 
-class EmpiricalBucket {
-    wins: number = 0;
-    losses: number = 0;
-    total_win_amount: number = 0;
-    total_loss_amount: number = 0;
-    ewma_p: number = 0.5;
-    ewma_r: number = 1.0;
-    alpha: number;
+export class LeviathanBot {
+    settings: any;
+    private indicatorData: Record<string, IndicatorData> = {};
 
-    constructor(alpha: number) {
-        this.alpha = alpha;
+    constructor(symbol: string, globalConfig: StrategyConfig) {
+        const profile = AssetProfiles[symbol] || AssetProfiles['DEFAULT'];
+        this.settings = {
+            ...globalConfig,
+            ...profile,
+            MACRO_TREND_TF: "30T",
+            EXECUTION_TF: "5T",
+        };
     }
 
-    update(outcome_return: number) {
-        let win_rate = this.wins / (this.wins + this.losses) || 0.5;
-        let avg_win = this.total_win_amount / this.wins || 0.0;
-        let avg_loss = this.total_loss_amount / this.losses || 0.0;
-        
-        if (outcome_return > 0) {
-            this.wins++;
-            this.total_win_amount += outcome_return;
-            win_rate = this.wins / (this.wins + this.losses);
-            avg_win = this.total_win_amount / this.wins;
-        } else {
-            this.losses++;
-            this.total_loss_amount += -outcome_return;
-            win_rate = this.wins / (this.wins + this.losses);
-            avg_loss = this.total_loss_amount / this.losses;
-        }
-        
-        const R = avg_loss > 0 ? avg_win / avg_loss : 1.0;
-        this.ewma_p = (1 - this.alpha) * this.ewma_p + this.alpha * win_rate;
-        this.ewma_r = (1 - this.alpha) * this.ewma_r + this.alpha * R;
-    }
-}
-
-export class AdaptiveKellyBot {
-    config: StrategyConfig;
-    capital: number;
-    tf_signals: Record<number, TFSignal> = {};
-    empirical_buckets: Record<number, EmpiricalBucket> = {};
-
-    constructor(config: StrategyConfig) {
-        this.config = config;
-        this.capital = config.total_capital_usd;
-
-        for (const tf of BOT_TIMEFRAMES) {
-            this.tf_signals[tf] = { timeframe_min: tf, probability: 0.5, score: 0.0, last_signal: 'hold', samples: 0 };
-            this.empirical_buckets[tf] = new EmpiricalBucket(config.ewma_alpha);
-        }
-    }
-
-    // --- UTILITIES ---
-    private aggregateCandles(candles: PriceHistoryLogEntry[], intervalMinutes: number): PriceHistoryLogEntry[] {
+    private resample(candles: PriceHistoryLogEntry[], intervalMinutes: number): PriceHistoryLogEntry[] {
         if (!candles || candles.length === 0) return [];
         const intervalMs = intervalMinutes * 60 * 1000;
-        const sorted = [...candles].sort((a, b) => a.id - b.id);
         const aggregated = new Map<number, PriceHistoryLogEntry>();
-        for (const c of sorted) {
+        candles.forEach(c => {
             const timestamp = Math.floor(c.id / intervalMs) * intervalMs;
             if (!aggregated.has(timestamp)) {
                 aggregated.set(timestamp, { ...c, id: timestamp, timestamp: new Date(timestamp) });
@@ -80,157 +62,146 @@ export class AdaptiveKellyBot {
                 existing.close = c.close;
                 existing.volume += c.volume;
             }
-        }
-        return Array.from(aggregated.values());
-    }
-
-    // --- CORE LOGIC ---
-    computeTfSignal(candles: PriceHistoryLogEntry[], tf: number): TFSignal {
-        const agg = this.aggregateCandles(candles, tf);
-        if (agg.length < 50) return { timeframe_min: tf, probability: 0.5, score: 0.0, last_signal: 'hold', samples: 0 };
-        
-        const closes = agg.map(c => c.close);
-        const emaFast = calculateEMA(closes, 50).pop()!;
-        const emaSlow = calculateEMA(closes, agg.length >= 200 ? 200 : 100).pop()!;
-        const rsiVal = calculateRSI(closes, 14).pop()!;
-        const { MACD, signal: signalLine } = calculateMACD(closes);
-        const macdVal = MACD.pop()! - signalLine.pop()!;
-        const atrVal = calculateATR(agg, 14).pop()!;
-        const price = closes[closes.length - 1];
-        const atrPct = atrVal / price;
-
-        const trend = Math.tanh((emaFast - emaSlow) / price * 100);
-        const mom = Math.tanh((rsiVal - 50) / 25);
-        const macdScore = Math.tanh(macdVal / price * 100);
-        
-        let score = 0.5 * trend + 0.35 * mom + 0.15 * macdScore;
-        score *= (1 - Math.exp(-atrPct * 1000)); // Volatility gate
-
-        const signal = score > 0.08 ? 'bull' : score < -0.08 ? 'bear' : 'hold';
-        
-        const bucket = this.empirical_buckets[tf];
-        const rawP = 0.5 + 0.4 * Math.tanh(score * 5);
-        const combinedP = 0.6 * bucket.ewma_p + 0.4 * rawP;
-        const samples = Math.floor(bucket.wins + bucket.losses);
-
-        return { timeframe_min: tf, probability: combinedP, score, last_signal: signal, samples };
-    }
-    
-    produceTfMap(candles: PriceHistoryLogEntry[]): Record<number, TFSignal> {
-        for (const tf of BOT_TIMEFRAMES) {
-            this.tf_signals[tf] = this.computeTfSignal(candles, tf);
-        }
-        return this.tf_signals;
-    }
-    
-    aggregateConfidence(): { agg_p: number, strength: number } {
-        const weights: Record<number, number> = {};
-        let totalW = 0;
-        BOT_TIMEFRAMES.forEach(tf => {
-            const w = 1.0 / (Math.log(tf + 1) + 0.01);
-            weights[tf] = w;
-            totalW += w;
         });
-        Object.keys(weights).forEach(tf_key => {
-            const tf = Number(tf_key);
-            weights[tf] /= totalW;
-        });
-        
-        let votes = 0;
-        BOT_TIMEFRAMES.forEach(tf => {
-            const s = this.tf_signals[tf];
-            if (s.last_signal === 'bull') votes += weights[tf] * s.probability;
-            else if (s.last_signal === 'bear') votes -= weights[tf] * (1 - s.probability);
-        });
-        
-        const aggP = Math.max(0.01, Math.min(0.99, 0.5 + votes));
-        const strength = BOT_TIMEFRAMES.reduce((sum, tf) => sum + Math.abs(this.tf_signals[tf].score) * weights[tf], 0);
-        
-        return { agg_p: aggP, strength };
+        return Array.from(aggregated.values()).sort((a,b)=>a.id - b.id);
     }
-    
-    computeBet(aggP: number, tfChoice: number, assumedR: number = 2.0): number {
-        const p = aggP;
-        const R = this.empirical_buckets[tfChoice].ewma_r || assumedR;
-        const rawK = p - (1 - p) / R;
-        if (rawK <= 0) return 0;
-        
-        const bucket = this.empirical_buckets[tfChoice];
-        const sampleN = bucket.wins + bucket.losses;
-        const sampleShrink = Math.min(1.0, sampleN / this.config.min_samples_for_bucket);
-        
-        const kShrunk = rawK * this.config.fractional_kelly * this.config.base_kelly_fraction * sampleShrink;
-        
-        const bet = kShrunk * this.capital;
-        const betCap = this.config.max_bet_pct * this.capital;
-        
-        return Math.max(0, Math.min(bet, betCap));
-    }
-    
-     runSingleAnalysis(pair: string, history: PriceHistoryLogEntry[]): Signal | null {
-        if (history.length < 200) return null;
 
-        const tfMap = this.produceTfMap(history);
-        const { agg_p, strength } = this.aggregateConfidence();
-
-        const short_tfs = BOT_TIMEFRAMES.filter(tf => tf <= 30);
-        const chosen_tf = short_tfs.reduce((maxTf, tf) => 
-            Math.abs(tfMap[tf].score) > Math.abs(tfMap[maxTf].score) ? tf : maxTf
-        , short_tfs[0]);
-        
-        const chosen_signal = tfMap[chosen_tf].last_signal;
-
-        let action: 'buy' | 'sell' | 'hold' = 'hold';
-        let note = "Ensemble signals are mixed or weak.";
-
-        if ((agg_p > 0.52 && chosen_signal === 'bull') || (agg_p < 0.48 && chosen_signal === 'bear')) {
-             action = chosen_signal === 'bull' ? 'buy' : 'sell';
-             note = `Ensemble aligns with ${chosen_tf}m signal.`;
+    public prepareData(candles1m: PriceHistoryLogEntry[]): void {
+        const macro_df = this.resample(candles1m, 30);
+        if (macro_df.length > this.settings.MACRO_EMA_PERIOD) {
+            this.indicatorData[this.settings.MACRO_TREND_TF] = {
+                candles: macro_df,
+                ema: calculateEMA(macro_df.map(c => c.close), this.settings.MACRO_EMA_PERIOD),
+            };
         }
 
-        const betSizeUSD = action !== 'hold' ? this.computeBet(agg_p, chosen_tf) : 0;
-        if(betSizeUSD < 1) action = 'hold';
+        const exec_df = this.resample(candles1m, 5);
+        if (exec_df.length > this.settings.bband_period) {
+            this.indicatorData[this.settings.EXECUTION_TF] = {
+                candles: exec_df,
+                bbands: calculateBollingerBands(exec_df.map(c => c.close), this.settings.bband_period, this.settings.bband_std_dev),
+            };
+        }
+    }
+    
+    private findLastIndex(candles: PriceHistoryLogEntry[], timestamp: number): number {
+        if (!candles) return -1;
+        // This is a simple version of pandas.asof
+        let last_idx = -1;
+        for (let i = candles.length - 1; i >= 0; i--) {
+            if (candles[i].id <= timestamp) {
+                last_idx = i;
+                break;
+            }
+        }
+        return last_idx;
+    }
+
+    public checkForSetup(timestamp: number): (PendingOrder & { note: string }) | { note: string } {
+        const macro_tf_data = this.indicatorData[this.settings.MACRO_TREND_TF];
+        const exec_tf_data = this.indicatorData[this.settings.EXECUTION_TF];
+
+        if (!macro_tf_data?.ema || !exec_tf_data?.bbands?.bbw) return { note: "Indicator data not ready." };
         
-        const currentPrice = history[history.length - 1].close;
-        const stopLossPct = 0.015; // 1.5%
-        const takeProfitPct = 0.03; // 3%
+        const macro_idx = this.findLastIndex(macro_tf_data.candles, timestamp);
+        if (macro_idx < 0 || macro_idx >= macro_tf_data.ema.length) return { note: `Macro data out of bounds for timestamp ${timestamp}.` };
+        
+        const macro_latest_candle = macro_tf_data.candles[macro_idx];
+        const macro_latest_ema = macro_tf_data.ema[macro_idx];
+        const macro_trend = macro_latest_candle.close > macro_latest_ema ? 'UP' : 'DOWN';
 
-        const meta: TimeframeAnalysis[] = Object.values(tfMap).map(
-            (tf: TFSignal): TimeframeAnalysis => ({
-                timeframe: `${tf.timeframe_min}m`,
-                confidence: tf.probability,
-                signal: tf.last_signal,
-                score: tf.score,
-                samples: tf.samples,
-            })
-        );
+        const exec_idx = this.findLastIndex(exec_tf_data.candles, timestamp);
+        const bband_idx = exec_idx - (exec_tf_data.candles.length - exec_tf_data.bbands.bbw.length);
+        if (bband_idx < 0 || bband_idx >= exec_tf_data.bbands.bbw.length) return { note: `Exec data out of bounds for timestamp ${timestamp}. Trend: ${macro_trend}.` };
 
-        return {
-            pair,
-            action,
-            confidence: agg_p,
-            strength,
-            betSizeUSD,
-            last_price: currentPrice,
-            take_profit: action === 'buy' ? currentPrice * (1 + takeProfitPct) : currentPrice * (1 - takeProfitPct),
-            stop_loss: action === 'buy' ? currentPrice * (1 - stopLossPct) : currentPrice * (1 + stopLossPct),
-            meta: meta,
-            note
-        };
+        const latest_bbw = exec_tf_data.bbands.bbw[bband_idx];
+
+        if (latest_bbw < this.settings.BBW_SQUEEZE_THRESHOLD) {
+            const exec_candles = exec_tf_data.candles;
+            const consolidation_slice = exec_candles.slice(Math.max(0, exec_idx - 10), exec_idx + 1);
+            if(consolidation_slice.length < 2) return { note: "Not enough candles for consolidation range."};
+            
+            const consolidation_high = Math.max(...consolidation_slice.map(c => c.high));
+            const consolidation_low = Math.min(...consolidation_slice.map(c => c.low));
+            
+            if (macro_trend === 'UP') {
+                return { pair: this.settings.trading_pairs[0], direction: 'BUY', entryPrice: consolidation_high, stopLoss: consolidation_low, note: `Squeeze detected. Trend UP. Pending BUY at ${consolidation_high.toFixed(4)}` };
+            } else {
+                return { pair: this.settings.trading_pairs[0], direction: 'SELL', entryPrice: consolidation_low, stopLoss: consolidation_high, note: `Squeeze detected. Trend DOWN. Pending SELL at ${consolidation_low.toFixed(4)}` };
+            }
+        }
+        return { note: `Trend: ${macro_trend}. BBW (${latest_bbw.toFixed(4)}) > Threshold (${this.settings.BBW_SQUEEZE_THRESHOLD}).`};
+    }
+
+    public calculateInitialSize(entryPrice: number, stopLoss: number, balance: number): number {
+        const risk_per_unit = Math.abs(entryPrice - stopLoss);
+        if (risk_per_unit < 1e-9) return 0;
+        const risk_amount = balance * this.settings.TRADE_RISK_PERCENT;
+        return risk_amount / risk_per_unit;
+    }
+
+    public managePosition(trade: Trade, currentPrice: number): { updatedTrade?: Partial<Trade>, pnl?: number, reason?: string, closedUnits?: number } {
+        const initial_risk = Math.abs(trade.entryPrice - trade.initialStopLoss);
+        
+        // TP1 Logic
+        if (!trade.tp1Hit) {
+            const tp1_price = trade.direction === 'LONG' ? trade.entryPrice + initial_risk : trade.entryPrice - initial_risk;
+            if ((trade.direction === 'LONG' && currentPrice >= tp1_price) || (trade.direction === 'SHORT' && currentPrice <= tp1_price)) {
+                const unitsToClose = trade.sizeUnits / 3;
+                const pnl = (tp1_price - trade.entryPrice) * unitsToClose * (trade.direction === 'LONG' ? 1 : -1);
+                return {
+                    updatedTrade: { tp1Hit: true, stopLoss: trade.entryPrice, sizeUnits: trade.sizeUnits * (2/3) },
+                    pnl,
+                    closedUnits: unitsToClose,
+                    reason: 'TP1 Hit, SL to Breakeven',
+                };
+            }
+        }
+        
+        // TP2 Logic
+        if (trade.tp1Hit && !trade.tp2Hit) {
+            const tp2_price = trade.direction === 'LONG' ? trade.entryPrice + 2 * initial_risk : trade.entryPrice - 2 * initial_risk;
+            if ((trade.direction === 'LONG' && currentPrice >= tp2_price) || (trade.direction === 'SHORT' && currentPrice <= tp2_price)) {
+                const unitsToClose = trade.sizeUnits / 2; // Half of remaining size
+                const pnl = (tp2_price - trade.entryPrice) * unitsToClose * (trade.direction === 'LONG' ? 1 : -1);
+                return {
+                    updatedTrade: { tp2Hit: true, sizeUnits: trade.sizeUnits / 2 },
+                    pnl,
+                    closedUnits: unitsToClose,
+                    reason: 'TP2 Hit, Trailing Stop Activated',
+                };
+            }
+        }
+
+        // Trailing Stop Logic (only after TP2 is hit)
+        if (trade.tp2Hit) {
+            if (trade.direction === 'LONG') {
+                const highWaterMark = Math.max(trade.highWaterMark || currentPrice, currentPrice);
+                const newStop = highWaterMark * (1 - this.settings.trailing_stop_percent);
+                if (newStop > trade.stopLoss) {
+                    return { updatedTrade: { highWaterMark, stopLoss: newStop } };
+                }
+            } else { // SHORT
+                const lowWaterMark = Math.min(trade.lowWaterMark || currentPrice, currentPrice);
+                const newStop = lowWaterMark * (1 + this.settings.trailing_stop_percent);
+                if (newStop < trade.stopLoss) {
+                    return { updatedTrade: { lowWaterMark, stopLoss: newStop } };
+                }
+            }
+        }
+        
+        // Stop Loss Check
+        if ((trade.direction === 'LONG' && currentPrice <= trade.stopLoss) || (trade.direction === 'SHORT' && currentPrice >= trade.stopLoss)) {
+            const pnl = (trade.stopLoss - trade.entryPrice) * trade.sizeUnits * (trade.direction === 'LONG' ? 1 : -1);
+            const reason = trade.tp1Hit ? 'Stop Loss' : 'Initial Stop';
+            return {
+                updatedTrade: { status: 'closed', exitPrice: trade.stopLoss, closedAt: new Date() },
+                pnl,
+                closedUnits: trade.sizeUnits,
+                reason: reason
+            };
+        }
+        
+        return {}; // No action
     }
 }
-
-export const runBotAnalysis = (
-    pair: string,
-    history: PriceHistoryLogEntry[],
-    config: StrategyConfig,
-    livePrice: PriceHistoryLogEntry | null,
-): Signal | null => {
-    const bot = new AdaptiveKellyBot(config);
-    let analysisHistory = [...history]; // Make a copy
-    // If livePrice is provided and is newer than the last history entry, add it.
-    if (livePrice && (!analysisHistory.length || livePrice.id > analysisHistory[analysisHistory.length - 1].id)) {
-        analysisHistory.push(livePrice);
-    }
-    return bot.runSingleAnalysis(pair, analysisHistory);
-};

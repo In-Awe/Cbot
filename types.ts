@@ -1,55 +1,50 @@
+
 export interface StrategyConfig {
     trading_pairs: string[];
     total_capital_usd: number;
     max_concurrent_trades: number;
 
-    // High-level risk management for the Adaptive Kelly Bot
-    base_kelly_fraction: number; // User-controlled safety multiplier for the Kelly bet size.
-    max_bet_pct: number;      // Hard cap on position size as a percentage of total capital.
+    // Global Settings ('Leviathan' Engine)
+    bband_period: number;
+    bband_std_dev: number;
+    trailing_stop_percent: number; // Final trailing stop after TPs are hit
+
+    // Simulation Realism (Kept for backtester)
+    fee_pct: number;
+    slippage_pct_perc: number;
     
-    // Bot's internal learning parameters (less frequently changed)
-    fractional_kelly: number; // Additional shrinkage factor applied to the raw Kelly fraction.
-    min_samples_for_bucket: number; // Minimum historical trades required to fully trust empirical win rates.
-    ewma_alpha: number;       // The learning rate (smoothing factor) for updating win-rate estimates.
+    // Backtest Safety (Kept for backtester)
+    max_drawdown_pct: number;
 }
 
-export interface MarketRegime {
-    volatility: 'High' | 'Normal' | 'Low';
-    trend: 'Uptrend' | 'Downtrend' | 'Ranging';
-    details: {
-        trend_ema_fast?: number;
-        trend_ema_slow?: number;
-        volatility_atr_pct?: string; // Stored as string for display
-    }
-}
-
-
-export interface TimeframeAnalysis {
-    timeframe: string;
-    confidence: number;
-    signal: 'bull' | 'bear' | 'hold' | 'neutral' | 'error';
-    score?: number; // Optional as Gemini doesn't provide it.
-    samples?: number; // Optional as Gemini doesn't provide it.
-    details?: Record<string, string | number | MarketRegime>;
-    error?: string | null; // From Gemini
-}
-
+// For Gemini AI Engine responses
 export interface Signal {
     pair: string;
     action: 'buy' | 'sell' | 'hold';
-    // Aggregate values
-    confidence: number; // This is now the aggregate win probability
-    strength: number; // Aggregate score strength
-    betSizeUSD?: number;
-    // Base data
-    last_price: number | null;
-    take_profit: number | null;
-    stop_loss: number | null;
-    // Breakdown
-    meta: TimeframeAnalysis[];
+    confidence: number;
+    score: number;
+    last_price?: number;
+    take_profit?: number;
+    stop_loss?: number;
+    meta: {
+        timeframe: string;
+        signal: 'bull' | 'bear' | 'neutral' | 'error';
+        confidence: number;
+        error?: string;
+    }[];
     note?: string;
-    regime?: MarketRegime;
+    suggested_take_profit_pct?: number;
+    suggested_stop_loss_pct?: number;
 }
+
+// Replaces 'Signal' as the bot now waits for breakout entries
+export interface PendingOrder {
+    pair: string;
+    direction: 'BUY' | 'SELL';
+    entryPrice: number;
+    stopLoss: number;
+}
+
 
 export interface Trade {
     id: string;
@@ -57,15 +52,23 @@ export interface Trade {
     direction: 'LONG' | 'SHORT';
     entryPrice: number;
     openedAt: Date;
-    takeProfit: number;
-    stopLoss: number;
-    status: 'pending' | 'active' | 'closed';
-    tradeAmountUSD: number;
+    status: 'active' | 'closed';
+    
+    // --- Leviathan Specific ---
+    sizeUnits: number; // Position size is now in base asset units, not USD
+    initialStopLoss: number; // The stop loss at the time of entry
+    stopLoss: number; // The current, dynamic stop loss
+    tp1Hit: boolean; // Flag for first partial take-profit
+    tp2Hit: boolean; // Flag for second partial take-profit
+    
     exitPrice?: number;
     closedAt?: Date;
     pnl?: number;
-    initialConfidence?: number;
-    initialSignalMeta?: TimeframeAnalysis[];
+    reason?: string; // Exit reason
+
+    // For trailing stop
+    highWaterMark?: number;
+    lowWaterMark?: number;
 }
 
 export interface AnalysisLogEntry {
@@ -73,9 +76,8 @@ export interface AnalysisLogEntry {
     timestamp: Date;
     pair: string;
     price: number;
-    action: 'buy' | 'sell' | 'hold';
-    confidence: number;
-    meta: TimeframeAnalysis[];
+    action: 'setup_buy' | 'setup_sell' | 'hold';
+    note: string;
 }
 
 export type SimulationStatus = 'stopped' | 'running' | 'paused' | 'warming up' | 'backtesting' | 'backtest_complete';

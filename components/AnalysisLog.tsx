@@ -1,6 +1,6 @@
 
 import React from 'react';
-import type { AnalysisLogEntry, TimeframeAnalysis } from '../types';
+import type { AnalysisLogEntry } from '../types';
 import { Card } from './ui/Card';
 import { DownloadIcon } from './icons/DownloadIcon';
 
@@ -10,24 +10,16 @@ interface AnalysisLogProps {
 }
 
 const getActionColor = (action: string) => {
-    if (action === 'buy') return 'text-green-400';
-    if (action === 'sell') return 'text-red-400';
+    if (action.includes('buy')) return 'text-green-400';
+    if (action.includes('sell')) return 'text-red-400';
     return 'text-gray-400';
-}
-
-const getSignalChipClasses = (signal: TimeframeAnalysis['signal']) => {
-    switch (signal) {
-        case 'bull': return 'bg-green-500/20 text-green-300';
-        case 'bear': return 'bg-red-500/20 text-red-300';
-        default: return 'bg-gray-500/20 text-gray-300';
-    }
 }
 
 export const AnalysisLog: React.FC<AnalysisLogProps> = ({ logEntries, onExport }) => {
     return (
         <Card>
              <div className="flex justify-between items-center mb-6">
-                <h2 className="text-2xl font-bold text-gray-100">Live Analysis Log</h2>
+                <h2 className="text-2xl font-bold text-gray-100">Bot Analysis Log</h2>
                 <button 
                     onClick={onExport}
                     disabled={logEntries.length === 0}
@@ -40,7 +32,7 @@ export const AnalysisLog: React.FC<AnalysisLogProps> = ({ logEntries, onExport }
             
             {logEntries.length === 0 ? (
                 <div className="text-center py-10">
-                    <p className="text-gray-400">Run a simulation or manual analysis to see the log here.</p>
+                    <p className="text-gray-400">Run a simulation or backtest to see the bot's decision log here.</p>
                 </div>
             ) : (
                 <div className="overflow-x-auto max-h-96 overflow-y-auto">
@@ -51,8 +43,7 @@ export const AnalysisLog: React.FC<AnalysisLogProps> = ({ logEntries, onExport }
                                 <th scope="col" className="px-4 py-3">Pair</th>
                                 <th scope="col" className="px-4 py-3">Price</th>
                                 <th scope="col" className="px-4 py-3">Action</th>
-                                <th scope="col" className="px-4 py-3">Confidence</th>
-                                <th scope="col" className="px-4 py-3 min-w-[200px]">Timeframe Details</th>
+                                <th scope="col" className="px-4 py-3 min-w-[300px]">Note</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -62,18 +53,9 @@ export const AnalysisLog: React.FC<AnalysisLogProps> = ({ logEntries, onExport }
                                     <td className="px-4 py-3 font-medium text-white">{entry.pair}</td>
                                     <td className="px-4 py-3 font-mono">${entry.price.toFixed(4)}</td>
                                     <td className={`px-4 py-3 font-semibold uppercase ${getActionColor(entry.action)}`}>
-                                        {entry.action}
+                                        {entry.action.replace('_', ' ')}
                                     </td>
-                                    <td className="px-4 py-3">{(entry.confidence * 100).toFixed(0)}%</td>
-                                    <td className="px-4 py-3">
-                                        <div className="flex flex-wrap gap-1">
-                                            {entry.meta?.map(m => (
-                                                <span key={m.timeframe} className={`px-1.5 py-0.5 text-[10px] rounded ${getSignalChipClasses(m.signal)}`}>
-                                                    {m.timeframe}: {(m.confidence * 100).toFixed(0)}%
-                                                </span>
-                                            ))}
-                                        </div>
-                                    </td>
+                                    <td className="px-4 py-3 text-gray-400 text-xs">{entry.note}</td>
                                 </tr>
                             ))}
                         </tbody>
