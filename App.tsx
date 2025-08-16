@@ -12,7 +12,7 @@ import { BotStrategy } from './components/BotStrategy';
 import type { Trade, AnalysisLogEntry, TerminalLogEntry, SimulationStatus, PriceHistoryLogEntry, HeatScores } from './types';
 import { XrpUsdTrader } from './services/botService';
 import { fetchHistorical1mKlines, fetchHistorical1sKlines, fetchKlinesSince } from './services/binanceService';
-import { addPriceHistory, getPriceHistory, getFullPriceHistory, getHistoryCounts, initDBForPairs } from './services/dbService';
+import { addPriceHistory, getHistoryCounts, initDB, getTrades, addOrUpdateTrades, getFullPriceHistory } from './services/dbService';
 import { exportToCsv } from './services/exportService';
 
 const App: React.FC = () => {
@@ -60,7 +60,6 @@ const App: React.FC = () => {
         setPriceHistoryCounts(counts);
     }, []);
     
-    // Main analysis loop
     const runMainTick = useCallback(async () => {
         if (!botInstanceRef.current) {
             addLog('Bot not initialized for analysis.', 'error');
@@ -68,30 +67,54 @@ const App: React.FC = () => {
         }
 
         try {
-            // 1. FETCH LATEST DATA
-            const ROLLING_WINDOW_SECONDS = 360; // 6 minutes
+            const ROLLING_WINDOW_SECONDS = 360;
             const startTime = Date.now() - ROLLING_WINDOW_SECONDS * 1000;
             const recentKlines = await fetchKlinesSince(TRADING_PAIR, '1s', startTime);
 
-            if (recentKlines.length === 0) {
-                addLog('No recent 1s kline data received from API. Trade management will use last known price.', 'warn');
-            } else {
+            if (recentKlines.length > 0) {
                 botInstanceRef.current.initializeBuffer(recentKlines);
+            } else {
+                addLog('No recent 1s kline data. Trade management will use last known price.', 'warn');
             }
 
             const latestLivePriceEntry = recentKlines.length > 0 ? recentKlines[recentKlines.length - 1] : livePrice;
             const latestLivePrice = latestLivePriceEntry?.close ?? 0;
 
-            // 2. MANAGE OPEN TRADES
+            // MANAGE OPEN TRADES
             if (openTradesRef.current.length > 0 && latestLivePrice > 0) {
                 const tradesToClose: Trade[] = [];
+                const tradesToUpdate: Trade[] = [];
                 const stillOpenTrades: Trade[] = [];
                 const tradeExitSeconds = botInstanceRef.current.getTradeExitSeconds();
+                const trailingStopConfig = botInstanceRef.current.getTrailingStopConfig();
 
                 for (const trade of openTradesRef.current) {
                     let closeReason: string | null = null;
+                    let tradeUpdated = false;
                     const tradeAgeSeconds = (Date.now() - new Date(trade.openedAt).getTime()) / 1000;
 
+                    // Trailing Stop Logic
+                    if (trade.direction === 'LONG') {
+                        const activationPrice = trade.entryPrice * (1 + trailingStopConfig.activation / 100);
+                        if (latestLivePrice > activationPrice) {
+                            const newStopLoss = latestLivePrice * (1 - trailingStopConfig.distance / 100);
+                            if (newStopLoss > trade.stopLoss) {
+                                trade.stopLoss = newStopLoss;
+                                tradeUpdated = true;
+                            }
+                        }
+                    } else { // SHORT
+                        const activationPrice = trade.entryPrice * (1 - trailingStopConfig.activation / 100);
+                        if (latestLivePrice < activationPrice) {
+                            const newStopLoss = latestLivePrice * (1 + trailingStopConfig.distance / 100);
+                            if (newStopLoss < trade.stopLoss) {
+                                trade.stopLoss = newStopLoss;
+                                tradeUpdated = true;
+                            }
+                        }
+                    }
+
+                    // Stop-Loss and Time-Exit Checks
                     if (trade.direction === 'LONG' && latestLivePrice <= trade.stopLoss) {
                         closeReason = `Stop-loss triggered at $${trade.stopLoss.toFixed(4)}.`;
                     } else if (trade.direction === 'SHORT' && latestLivePrice >= trade.stopLoss) {
@@ -102,17 +125,11 @@ const App: React.FC = () => {
 
                     if (closeReason) {
                         const pnl = (trade.direction === 'LONG' ? latestLivePrice - trade.entryPrice : trade.entryPrice - latestLivePrice) * trade.sizeUnits;
-                        const closedTrade: Trade = {
-                            ...trade,
-                            status: 'closed',
-                            exitPrice: latestLivePrice,
-                            closedAt: new Date(),
-                            pnl,
-                            reason: `${trade.reason} | Exit: ${closeReason}`
-                        };
+                        const closedTrade: Trade = { ...trade, status: 'closed', exitPrice: latestLivePrice, closedAt: new Date(), pnl, reason: `${trade.reason} | Exit: ${closeReason}` };
                         tradesToClose.push(closedTrade);
                         addLog(`Closing ${trade.direction} trade. ${closeReason} PNL: $${pnl.toFixed(2)}`, pnl >= 0 ? 'response' : 'error', closedTrade);
                     } else {
+                        if (tradeUpdated) tradesToUpdate.push(trade);
                         stillOpenTrades.push(trade);
                     }
                 }
@@ -120,17 +137,19 @@ const App: React.FC = () => {
                 if (tradesToClose.length > 0) {
                     openTradesRef.current = stillOpenTrades;
                     closedTradesRef.current = [...tradesToClose, ...closedTradesRef.current];
+                    await addOrUpdateTrades(tradesToClose);
+                }
+                if (tradesToUpdate.length > 0) {
+                    await addOrUpdateTrades(tradesToUpdate);
+                    addLog(`Trailing stop updated for ${tradesToUpdate.length} trade(s).`, 'info');
                 }
             }
 
-            // 3. RUN ANALYSIS FOR NEW TRADES
+            // RUN ANALYSIS FOR NEW TRADES
             const { heatScores: newHeatScores } = botInstanceRef.current.runAnalysis();
-            const dailyTradeLimit = botInstanceRef.current.getDailyTradeLimit();
-            const dailyTradeCount = botInstanceRef.current.getDailyTradeCount();
-            const canTrade = dailyTradeCount < dailyTradeLimit && openTradesRef.current.length === 0;
+            const canTrade = botInstanceRef.current.getDailyTradeCount() < botInstanceRef.current.getDailyTradeLimit() && openTradesRef.current.length === 0;
 
             let tradeToOpen: { direction: 'LONG' | 'SHORT'; reason: string, confidence: number } | null = null;
-            
             if (canTrade && newHeatScores['1s']) {
                 const CONFIDENCE_THRESHOLD = botInstanceRef.current.getConfidenceThreshold();
                 if (newHeatScores['1s'].buy >= CONFIDENCE_THRESHOLD) {
@@ -141,44 +160,23 @@ const App: React.FC = () => {
             }
                     
             const dynamicThreshold = botInstanceRef.current.getLastDynamicPriceThreshold();
-            const note = newHeatScores['1s']
-                ? `Impulse 1s (Buy/Sell): ${newHeatScores['1s'].buy}/${newHeatScores['1s'].sell}. Dyn. Thresh: ${dynamicThreshold.toFixed(4)}%`
-                : 'Waiting for impulse signals.';
-
-            const analysisEntry: AnalysisLogEntry = {
-                id: `analysis-${Date.now()}`,
-                timestamp: new Date(),
-                pair: TRADING_PAIR,
-                price: latestLivePrice,
-                action: tradeToOpen ? 'setup_found' : 'hold',
-                note: tradeToOpen ? `${tradeToOpen.reason} @ ${tradeToOpen.confidence}% confidence. ${note}`: note,
-            };
+            const note = newHeatScores['1s'] ? `Impulse 1s (Buy/Sell): ${newHeatScores['1s'].buy}/${newHeatScores['1s'].sell}. Dyn. Thresh: ${dynamicThreshold.toFixed(4)}%` : 'Waiting for impulse signals.';
+            const analysisEntry: AnalysisLogEntry = { id: `analysis-${Date.now()}`, timestamp: new Date(), pair: TRADING_PAIR, price: latestLivePrice, action: tradeToOpen ? 'setup_found' : 'hold', note: tradeToOpen ? `${tradeToOpen.reason} @ ${tradeToOpen.confidence}% confidence. ${note}`: note };
             
             if (tradeToOpen) {
                 const consolidationSlice = botInstanceRef.current.getRecentCandles(300);
                 if (consolidationSlice.length > 0) {
                      const high = Math.max(...consolidationSlice.map(c => c.high));
                      const low = Math.min(...consolidationSlice.map(c => c.low));
-
-                    const newTrade: Trade = {
-                        id: `trade-${Date.now()}`,
-                        pair: TRADING_PAIR,
-                        direction: tradeToOpen.direction,
-                        entryPrice: latestLivePrice,
-                        stopLoss: tradeToOpen.direction === 'LONG' ? low : high,
-                        openedAt: new Date(),
-                        status: 'active',
-                        sizeUnits: 1,
-                        reason: `${tradeToOpen.reason} @ ${tradeToOpen.confidence}%`,
-                    };
+                    const newTrade: Trade = { id: `trade-${Date.now()}`, pair: TRADING_PAIR, direction: tradeToOpen.direction, entryPrice: latestLivePrice, stopLoss: tradeToOpen.direction === 'LONG' ? low : high, openedAt: new Date(), status: 'active', sizeUnits: 1, reason: `${tradeToOpen.reason} @ ${tradeToOpen.confidence}%` };
                     openTradesRef.current = [newTrade, ...openTradesRef.current];
+                    await addOrUpdateTrades([newTrade]);
                     botInstanceRef.current.recordTradeExecution();
-                    
                     addLog(`New ${newTrade.direction} trade opened based on Impulse Tracker signal.`, 'response', newTrade);
                 }
             }
 
-            // 4. UPDATE UI STATE
+            // UPDATE UI STATE
             if (recentKlines.length > 0) {
                  setLiveCandles(recentKlines.slice().reverse());
                  setLivePrice(latestLivePriceEntry);
@@ -192,14 +190,14 @@ const App: React.FC = () => {
 
         } catch (e) {
             const errorMessage = e instanceof Error ? e.message : String(e);
-            addLog(`Tick failed: ${errorMessage}. The Binance API proxy may be unreliable.`, 'error', e instanceof Error ? { name: e.name, message: e.message, stack: e.stack } : { error: e });
+            addLog(`Tick failed: ${errorMessage}. The public Binance API proxy may be unreliable. Please check your network and try again.`, 'error', e instanceof Error ? { name: e.name, message: e.message, stack: e.stack } : { error: e });
         }
     }, [addLog, livePrice]);
 
     const tickLoop = useCallback(async () => {
         if (!isTickingRef.current) return;
         await runMainTick();
-        if (isTickingRef.current) { // Check again in case it was stopped during the tick
+        if (isTickingRef.current) {
             tickTimeoutRef.current = window.setTimeout(tickLoop, TICK_INTERVAL);
         }
     }, [runMainTick]);
@@ -207,25 +205,34 @@ const App: React.FC = () => {
     useEffect(() => {
         const initialLoad = async () => {
             addLog('App initialized for XRP/USDT trading.', 'info');
-            await initDBForPairs([TRADING_PAIR]);
+            await initDB([TRADING_PAIR]);
             await refreshPriceHistoryFromDB();
+            
+            const loadedTrades = await getTrades();
+            if (loadedTrades.length > 0) {
+                const active = loadedTrades.filter(t => t.status === 'active');
+                const closed = loadedTrades.filter(t => t.status === 'closed');
+                openTradesRef.current = active;
+                closedTradesRef.current = closed;
+                setOpenTrades(active);
+                setClosedTrades(closed);
+                addLog(`Loaded ${active.length} active and ${closed.length} closed trades from database.`, 'info');
+            }
         };
         initialLoad();
         
         return () => {
             isTickingRef.current = false;
-            if (tickTimeoutRef.current) {
-                clearTimeout(tickTimeoutRef.current);
-            }
+            if (tickTimeoutRef.current) clearTimeout(tickTimeoutRef.current);
         };
-    }, [addLog, refreshPriceHistoryFromDB, tickLoop]);
+    }, [addLog, refreshPriceHistoryFromDB]);
     
     const handleBinanceConnect = useCallback(async (key: string, secret: string) => {
         setIsBinanceConnected(true);
         addLog('Binance API Connected. Backfilling high-resolution data for bot...', 'info');
         
         try {
-            await initDBForPairs([TRADING_PAIR]);
+            await initDB([TRADING_PAIR]);
             addLog(`[${TRADING_PAIR}] Fetching 2 hours of 1-minute k-lines for historical export...`, 'info');
             const klines1m = await fetchHistorical1mKlines(TRADING_PAIR, 2);
             await addPriceHistory(TRADING_PAIR, klines1m);
@@ -269,17 +276,11 @@ const App: React.FC = () => {
             tickTimeoutRef.current = null;
         }
         setSimulationStatus('stopped');
-        setOpenTrades([]);
-        openTradesRef.current = [];
-        setClosedTrades([]);
-        closedTradesRef.current = [];
         setHeatScores(null);
         setLastUpdated(null);
-        setLiveCandles([]);
-        setLivePrice(undefined);
     };
     
-    const handleExport = useCallback(async (type: 'terminal' | 'analysis' | 'price_history') => {
+    const handleExport = useCallback(async (type: 'terminal' | 'analysis' | 'price_history' | 'trades') => {
         addLog(`Exporting ${type} to CSV...`, 'request');
         try {
             if (type === 'terminal') {
@@ -289,6 +290,9 @@ const App: React.FC = () => {
             } else if (type === 'price_history') {
                 const fullHistory = await getFullPriceHistory(TRADING_PAIR, '1m');
                 exportToCsv('price_history_1m.csv', fullHistory);
+            } else if (type === 'trades') {
+                 const allTrades = await getTrades();
+                 exportToCsv('trade_history.csv', allTrades);
             }
             addLog(`Export successful.`, 'response');
         } catch (e) {
@@ -330,7 +334,7 @@ const App: React.FC = () => {
                             dailyTradeLimit={dailyTradeLimit}
                             lastUpdated={lastUpdated}
                         />
-                        <OpenPositions openTrades={openTrades} closedTrades={closedTrades} />
+                        <OpenPositions openTrades={openTrades} closedTrades={closedTrades} onExport={() => handleExport('trades')} />
                         <AnalysisLog logEntries={analysisLog} onExport={() => handleExport('analysis')} />
                         <LivePriceFeed 
                             candles={liveCandles}

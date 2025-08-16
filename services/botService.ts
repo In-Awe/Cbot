@@ -22,6 +22,8 @@ const TraderSettings = {
 
     // Trade Management
     TRADE_EXIT_SECONDS: 60,            // Exit trade after this many seconds if SL isn't hit
+    TRAILING_STOP_ACTIVATION_PERCENT: 0.15, // Activate trailing stop after this % profit
+    TRAILING_STOP_DISTANCE_PERCENT: 0.10, // Trail the price by this % distance
 
     // Bot Internals
     NUM_TRADES_PER_DAY: 100,
@@ -50,6 +52,10 @@ export class XrpUsdTrader {
     public getLastDynamicPriceThreshold = () => this.lastDynamicPriceThreshold;
     public getRecentCandles = (count: number) => this.dataBuffer1s.slice(-count);
     public getTradeExitSeconds = () => this.settings.TRADE_EXIT_SECONDS;
+    public getTrailingStopConfig = () => ({
+        activation: this.settings.TRAILING_STOP_ACTIVATION_PERCENT,
+        distance: this.settings.TRAILING_STOP_DISTANCE_PERCENT,
+    });
 
     public initializeBuffer(candles1s: PriceHistoryLogEntry[]): void {
         this.dataBuffer1s = candles1s.sort((a, b) => a.id - b.id);
@@ -72,7 +78,7 @@ export class XrpUsdTrader {
         }
     }
 
-    public runAnalysis(): { heatScores: HeatScores, newOneMinuteCandles: PriceHistoryLogEntry[] } {
+    public runAnalysis(): { heatScores: HeatScores } {
         const volumes = this.dataBuffer1s.map(c => c.volume);
         const avgVolume = calculateSMA(volumes, this.settings.AVERAGE_VOLUME_WINDOW_S);
         
@@ -85,7 +91,7 @@ export class XrpUsdTrader {
 
         const heatScores = this.calculateHeat(preparedData);
         
-        return { heatScores, newOneMinuteCandles: [] };
+        return { heatScores };
     }
     
     public calculateHeat(preparedData: PreparedData): HeatScores {
@@ -99,8 +105,6 @@ export class XrpUsdTrader {
 
         const volatilityCandles = candles.slice(-this.settings.VOLATILITY_WINDOW_S);
         
-        // CRITICAL BUG FIX: The original logic for calculating returns was flawed.
-        // This new loop correctly calculates the percentage change between each candle.
         const priceReturns = [];
         for (let i = 1; i < volatilityCandles.length; i++) {
             const prevClose = volatilityCandles[i-1].close;

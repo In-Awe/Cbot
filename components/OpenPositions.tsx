@@ -1,20 +1,31 @@
-
 import React from 'react';
 import type { Trade } from '../types';
 import { Card } from './ui/Card';
 import { OpenPositionsRow } from './OpenPositionsRow';
+import { DownloadIcon } from './icons/DownloadIcon';
 
 interface OpenPositionsProps {
     openTrades: Trade[];
     closedTrades: Trade[];
+    onExport: () => void;
 }
 
-export const OpenPositions: React.FC<OpenPositionsProps> = ({ openTrades, closedTrades }) => {
+export const OpenPositions: React.FC<OpenPositionsProps> = ({ openTrades, closedTrades, onExport }) => {
     const allTrades = [...openTrades, ...closedTrades].sort((a, b) => new Date(b.openedAt).getTime() - new Date(a.openedAt).getTime());
 
     return (
         <Card>
-            <h2 className="text-2xl font-bold text-gray-100 mb-6">Open Positions & Trade History ({openTrades.length} Open)</h2>
+            <div className="flex justify-between items-center mb-6">
+                <h2 className="text-2xl font-bold text-gray-100">Open Positions & Trade History ({openTrades.length} Open)</h2>
+                <button 
+                    onClick={onExport}
+                    disabled={allTrades.length === 0}
+                    className="flex items-center gap-2 px-3 py-1.5 text-xs font-semibold text-gray-300 bg-gray-700/50 hover:bg-gray-700 rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                    <DownloadIcon />
+                    <span>Export CSV</span>
+                </button>
+            </div>
             {allTrades.length === 0 ? (
                 <div className="text-center py-10">
                     <p className="text-gray-400">No open positions. Bot is waiting for setups.</p>

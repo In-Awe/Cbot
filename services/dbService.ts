@@ -1,8 +1,9 @@
-import type { PriceHistoryLogEntry } from '../types';
+import type { PriceHistoryLogEntry, Trade } from '../types';
 
 const DB_NAME = 'TradingDashboardDB';
-const DB_VERSION = 1;
+const DB_VERSION = 2; // Incremented version to trigger onupgradeneeded for new store
 const STORE_PREFIX = 'priceHistory_';
+const TRADES_STORE_NAME = 'trades';
 
 let db: IDBDatabase | null = null;
 
@@ -26,31 +27,12 @@ const openDB = (): Promise<IDBDatabase> => {
 
         request.onupgradeneeded = (event) => {
             const dbInstance = (event.target as IDBOpenDBRequest).result;
-            // Object stores will be created on-demand if they don't exist
-            console.log("Database upgrade needed or initial setup.");
+            // Create trades store if it doesn't exist
+            if (!dbInstance.objectStoreNames.contains(TRADES_STORE_NAME)) {
+                dbInstance.createObjectStore(TRADES_STORE_NAME, { keyPath: 'id' });
+                console.log(`Object store ${TRADES_STORE_NAME} created.`);
+            }
         };
-    });
-};
-
-const createObjectStoreIfNeeded = (db: IDBDatabase, storeName: string): Promise<void> => {
-    return new Promise((resolve) => {
-        if (!db.objectStoreNames.contains(storeName)) {
-            const version = db.version;
-            db.close();
-            const open = indexedDB.open(DB_NAME, version + 1);
-            open.onupgradeneeded = () => {
-                const dbInstance = open.result;
-                if (!dbInstance.objectStoreNames.contains(storeName)) {
-                     dbInstance.createObjectStore(storeName, { keyPath: 'id' });
-                }
-            }
-            open.onsuccess = () => {
-                db = open.result;
-                resolve();
-            }
-        } else {
-            resolve();
-        }
     });
 };
 
@@ -59,13 +41,9 @@ export const addPriceHistory = async (pair: string, entries: PriceHistoryLogEntr
     const db = await openDB();
     const storeName = `${STORE_PREFIX}${pair.replace('/', '_')}`;
     
-    // Check if we need to create the store. This is a simplified approach.
-    // In a real-world app, store creation is best handled strictly in onupgradeneeded.
     if (!db.objectStoreNames.contains(storeName)) {
-        console.warn(`Object store ${storeName} does not exist. It will be created, this may cause a delay.`);
-        // A more robust solution might involve queueing transactions after a version change.
-        // For this app's lifecycle, we'll proceed assuming the user can wait a moment.
-        return; // We will handle creation in `initDBForPairs`
+        console.warn(`Object store ${storeName} does not exist. It must be created via initDB first.`);
+        return;
     }
     
     if (entries.length === 0) return;
@@ -78,10 +56,47 @@ export const addPriceHistory = async (pair: string, entries: PriceHistoryLogEntr
         transaction.onerror = (event) => reject(`Transaction error: ${(event.target as IDBTransaction).error}`);
         
         for (const entry of entries) {
-            store.put(entry); // 'put' will add or update based on keyPath 'id'
+            store.put(entry);
         }
     });
 };
+
+export const addOrUpdateTrades = async (trades: Trade[]): Promise<void> => {
+    const db = await openDB();
+    const transaction = db.transaction(TRADES_STORE_NAME, 'readwrite');
+    const store = transaction.objectStore(TRADES_STORE_NAME);
+
+    return new Promise((resolve, reject) => {
+        transaction.oncomplete = () => resolve();
+        transaction.onerror = (event) => reject(`Transaction error: ${(event.target as IDBTransaction).error}`);
+        for (const trade of trades) {
+            store.put(trade);
+        }
+    });
+};
+
+export const getTrades = async (): Promise<Trade[]> => {
+    const db = await openDB();
+    if (!db.objectStoreNames.contains(TRADES_STORE_NAME)) return [];
+
+    const transaction = db.transaction(TRADES_STORE_NAME, 'readonly');
+    const store = transaction.objectStore(TRADES_STORE_NAME);
+    const request = store.getAll();
+    
+    return new Promise((resolve, reject) => {
+        request.onsuccess = () => {
+            // Ensure dates are properly deserialized
+            const trades = (request.result as any[]).map(t => ({
+                ...t,
+                openedAt: new Date(t.openedAt),
+                closedAt: t.closedAt ? new Date(t.closedAt) : undefined,
+            }));
+            resolve(trades as Trade[]);
+        };
+        request.onerror = () => reject(request.error);
+    });
+};
+
 
 export const getPriceHistory = async (pair: string, limit: number = 100): Promise<PriceHistoryLogEntry[]> => {
     const db = await openDB();
@@ -90,7 +105,7 @@ export const getPriceHistory = async (pair: string, limit: number = 100): Promis
 
     const transaction = db.transaction(storeName, 'readonly');
     const store = transaction.objectStore(storeName);
-    const request = store.openCursor(null, 'prev'); // 'prev' to get the latest entries
+    const request = store.openCursor(null, 'prev');
     
     const entries: PriceHistoryLogEntry[] = [];
 
@@ -127,24 +142,6 @@ export const getFullPriceHistory = async (pair: string, interval?: '1m' | '15s')
     });
 };
 
-export const getLatestEntryTimestamp = async (pair: string): Promise<number | null> => {
-    const db = await openDB();
-    const storeName = `${STORE_PREFIX}${pair.replace('/', '_')}`;
-    if (!db.objectStoreNames.contains(storeName)) return null;
-
-    const transaction = db.transaction(storeName, 'readonly');
-    const store = transaction.objectStore(storeName);
-    const request = store.openCursor(null, 'prev');
-    
-    return new Promise((resolve) => {
-        request.onsuccess = (event) => {
-            const cursor = (event.target as IDBRequest<IDBCursorWithValue>).result;
-            resolve(cursor ? (cursor.value.id as number) : null);
-        };
-        request.onerror = () => resolve(null);
-    });
-};
-
 export const getHistoryCounts = async (pairs: string[]): Promise<Record<string, number>> => {
     const db = await openDB();
     const counts: Record<string, number> = {};
@@ -157,7 +154,7 @@ export const getHistoryCounts = async (pairs: string[]): Promise<Record<string, 
             const request = store.count();
             counts[pair] = await new Promise<number>(resolve => {
                 request.onsuccess = () => resolve(request.result);
-                request.onerror = () => resolve(0); // If count fails, return 0
+                request.onerror = () => resolve(0);
             });
         } else {
             counts[pair] = 0;
@@ -167,17 +164,23 @@ export const getHistoryCounts = async (pairs: string[]): Promise<Record<string, 
 };
 
 
-export const initDBForPairs = async (pairs: string[]): Promise<void> => {
+export const initDB = async (pairs: string[]): Promise<void> => {
     let currentDb = await openDB();
     const storesToCreate = pairs
         .map(p => `${STORE_PREFIX}${p.replace('/', '_')}`)
         .filter(name => !currentDb.objectStoreNames.contains(name));
         
+    if (!currentDb.objectStoreNames.contains(TRADES_STORE_NAME)) {
+        if (!storesToCreate.includes(TRADES_STORE_NAME)) {
+            storesToCreate.push(TRADES_STORE_NAME);
+        }
+    }
+        
     if (storesToCreate.length > 0) {
         console.log("Need to create new object stores:", storesToCreate);
         const newVersion = currentDb.version + 1;
-        currentDb.close(); // Must close before reopening with new version
-        db = null; // Prevent race conditions by clearing the stale connection handle
+        currentDb.close(); 
+        db = null;
 
         return new Promise((resolve, reject) => {
             const request = indexedDB.open(DB_NAME, newVersion);
