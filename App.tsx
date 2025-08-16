@@ -50,6 +50,7 @@ const App: React.FC = () => {
     const [isLoading, setIsLoading] = useState<boolean>(false);
     const [error, setError] = useState<string | null>(null);
     const [simulationStatus, setSimulationStatus] = useState<SimulationStatus>('stopped');
+    const [backtestProgress, setBacktestProgress] = useState(0);
     const [analysisEngine, setAnalysisEngine] = useState<AnalysisEngine>('internal');
     const [analysisLog, setAnalysisLog] = useState<AnalysisLogEntry[]>([]);
     const [terminalLog, setTerminalLog] = useState<TerminalLogEntry[]>([]);
@@ -65,6 +66,7 @@ const App: React.FC = () => {
     const configRef = useRef(config);
     const isBinanceConnectedRef = useRef(isBinanceConnected);
     const isAnalysisRunning = useRef(false);
+    const isBacktestRunningRef = useRef(false);
     const livePricesRef = useRef(livePrices);
     const lastFetchTimestampsRef = useRef<Record<string, number>>({});
 
@@ -211,7 +213,7 @@ const App: React.FC = () => {
         setOpenTrades(prev => [newTrade, ...prev]);
         addLog(`Position for ${signal.pair} (${direction}) of $${signal.betSizeUSD?.toFixed(2)} opened with status 'pending'.`, 'info');
         if (simulationStatus === 'running' && analysisEngine === 'internal') {
-           setTimeout(() => handleConfirmTrade(newTrade.id), 100);
+           handleConfirmTrade(newTrade.id);
         }
     }, [signals, addLog, openTrades, config.max_concurrent_trades, simulationStatus, analysisEngine, handleConfirmTrade]);
 
@@ -230,7 +232,7 @@ const App: React.FC = () => {
                         id: `${signal.pair}-${m.timeframe}-${m.signal}-${Date.now()}`,
                         pair: signal.pair,
                         timeframe: m.timeframe,
-                        predictedSignal: m.signal,
+                        predictedSignal: m.signal as 'bull' | 'bear',
                         predictionTime: Date.now(),
                         startPrice: signal.last_price,
                         status: 'pending'
@@ -366,7 +368,7 @@ const App: React.FC = () => {
             }
             resolvePredictions(currentPrices);
             
-            const fullPriceHistory: Record<string, PriceHistoryLogEntry[]> = await Object.fromEntries(
+            const fullPriceHistory: Record<string, PriceHistoryLogEntry[]> = Object.fromEntries(
                 await Promise.all(config.trading_pairs.map(async pair => [pair, await getFullPriceHistory(pair)]))
             );
 
@@ -411,6 +413,119 @@ const App: React.FC = () => {
         }
     }, [addLog, resolvePredictions, processSignalsAndUpdateState, analysisEngine, geminiApiKey, config, closedTrades]);
     
+    const handleRunBacktest = useCallback(async () => {
+        if (isBacktestRunningRef.current) return;
+
+        // 1. Setup
+        setSignals([]);
+        setOpenTrades([]);
+        setClosedTrades([]);
+        setAnalysisLog([]);
+        setPredictionRecords([]);
+        setBacktestProgress(0);
+        setError(null);
+        setSimulationStatus('backtesting');
+        isBacktestRunningRef.current = true;
+        addLog('Starting historical simulation...', 'request');
+
+        try {
+            const pairs = configRef.current.trading_pairs;
+            let backtestClosedTrades: Trade[] = [];
+            let backtestAnalysisLog: AnalysisLogEntry[] = [];
+            let backtestPredictionRecords: PredictionAccuracyRecord[] = [];
+            let totalCandles = 0;
+            let processedCandles = 0;
+
+            const allPairHistories: { pair: string, history: PriceHistoryLogEntry[] }[] = [];
+            for (const pair of pairs) {
+                const history = (await getFullPriceHistory(pair, '1m')).sort((a,b) => a.id - b.id);
+                 if (history.length < 101) {
+                    addLog(`Not enough 1m history for ${pair} (${history.length} candles), skipping backtest.`, 'warn');
+                    continue;
+                }
+                allPairHistories.push({ pair, history });
+                totalCandles += history.length - 100;
+            }
+
+            if (allPairHistories.length === 0) {
+                throw new Error("No pairs have sufficient historical data to run a backtest.");
+            }
+
+            for (const { pair, history } of allPairHistories) {
+                let openTrade: Trade | null = null;
+
+                for (let i = 100; i < history.length; i++) {
+                    if (!isBacktestRunningRef.current) break;
+                    
+                    const historySlice = history.slice(0, i + 1);
+                    const currentCandle = history[i];
+
+                    if (openTrade) {
+                        const { direction, entryPrice, takeProfit, stopLoss } = openTrade;
+                        let exitPrice: number | null = null;
+                        let reason: string | null = null;
+
+                        if (direction === 'LONG') {
+                            if (currentCandle.high >= takeProfit) { exitPrice = takeProfit; reason = 'Take Profit hit'; }
+                            else if (currentCandle.low <= stopLoss) { exitPrice = stopLoss; reason = 'Stop Loss hit'; }
+                        } else { // SHORT
+                            if (currentCandle.low <= takeProfit) { exitPrice = takeProfit; reason = 'Take Profit hit'; }
+                            else if (currentCandle.high >= stopLoss) { exitPrice = stopLoss; reason = 'Stop Loss hit'; }
+                        }
+
+                        if (exitPrice && reason) {
+                            const pnl = direction === 'LONG' ? (exitPrice - entryPrice) * (openTrade.tradeAmountUSD / entryPrice) : (entryPrice - exitPrice) * (openTrade.tradeAmountUSD / entryPrice);
+                            backtestClosedTrades.push({ ...openTrade, status: 'closed', exitPrice, closedAt: currentCandle.timestamp, pnl });
+                            openTrade = null;
+                        }
+                    }
+
+                    const signalResult = runBotAnalysis(pair, historySlice, configRef.current, null);
+                    if (signalResult) {
+                        backtestAnalysisLog.push({ id: `${pair}-${currentCandle.id}`, timestamp: currentCandle.timestamp, pair, price: currentCandle.close, action: signalResult.action, confidence: signalResult.confidence, meta: signalResult.meta });
+                        
+                        if ((signalResult.action === 'buy' || signalResult.action === 'sell') && signalResult.last_price && !openTrade) {
+                            openTrade = { id: `${pair}-${currentCandle.id}`, pair, direction: signalResult.action === 'buy' ? 'LONG' : 'SHORT', entryPrice: signalResult.last_price, openedAt: currentCandle.timestamp, takeProfit: signalResult.take_profit!, stopLoss: signalResult.stop_loss!, status: 'active', tradeAmountUSD: signalResult.betSizeUSD! };
+                        }
+                    }
+                    processedCandles++;
+                    if(i % 50 === 0) {
+                        setBacktestProgress( (processedCandles / totalCandles) * 100 );
+                        await new Promise(res => setTimeout(res, 0)); // Yield to main thread
+                    }
+                }
+                if (!isBacktestRunningRef.current) break;
+                if (openTrade) {
+                    const lastPrice = history[history.length-1].close;
+                    const pnl = openTrade.direction === 'LONG' ? (lastPrice - openTrade.entryPrice) * (openTrade.tradeAmountUSD / openTrade.entryPrice) : (openTrade.entryPrice - lastPrice) * (openTrade.tradeAmountUSD / openTrade.entryPrice);
+                    backtestClosedTrades.push({ ...openTrade, status: 'closed', exitPrice: lastPrice, closedAt: history[history.length-1].timestamp, pnl });
+                }
+            }
+
+            if(isBacktestRunningRef.current) {
+                setAnalysisLog(backtestAnalysisLog);
+                setClosedTrades(backtestClosedTrades);
+                setOpenTrades([]);
+                setSimulationStatus('backtest_complete');
+                setBacktestProgress(100);
+                addLog(`Backtest complete. Generated ${backtestClosedTrades.length} trades.`, 'info');
+            } else {
+                 addLog('Backtest stopped by user.', 'warn');
+                 setSimulationStatus('stopped');
+            }
+
+        } catch(e) {
+            const errorMessage = e instanceof Error ? e.message : String(e);
+            setError(`Backtest Error: ${errorMessage}`);
+            addLog(`Backtest Error: ${errorMessage}`, 'error');
+            setSimulationStatus('stopped');
+        } finally {
+            isBacktestRunningRef.current = false;
+        }
+
+    }, [addLog]);
+
+
     const handleManualPriceFetch = async () => {
         if (!isBinanceConnected) return alert("Please connect to Binance first.");
         addLog('Manually fetching live prices...', 'request');
@@ -487,6 +602,12 @@ const App: React.FC = () => {
     
     const handlePlay = () => {
         addLog('Simulation starting... Performing initial analysis on historical data.', 'info');
+        setSignals([]);
+        setOpenTrades([]);
+        setClosedTrades([]);
+        setAnalysisLog([]);
+        setPredictionRecords([]);
+        setError(null);
         setSimulationStatus('warming up');
 
         const initializeSimulation = async () => {
@@ -513,7 +634,17 @@ const App: React.FC = () => {
         initializeSimulation();
     };
     const handlePause = () => { addLog('Simulation paused.', 'info'); setSimulationStatus('paused'); handleClearTimers(); };
-    const handleStop = () => { addLog('Simulation stopped.', 'info'); setSimulationStatus('stopped'); setSignals([]); setAnalysisLog([]); handleClearTimers(); }
+    const handleStop = () => {
+        if (isBacktestRunningRef.current) {
+            isBacktestRunningRef.current = false; // This will signal the loop to stop
+        } else {
+            addLog('Simulation stopped.', 'info');
+            setSimulationStatus('stopped');
+            setSignals([]);
+            setAnalysisLog([]);
+            handleClearTimers();
+        }
+    };
 
     useEffect(() => {
         if (simulationStatus === 'running') {
@@ -668,6 +799,8 @@ const App: React.FC = () => {
                             onAdvance={() => runAnalysis()}
                             onManualAnalysis={handleTriggerManualAnalysis}
                             onEngineChange={setAnalysisEngine}
+                            onRunBacktest={handleRunBacktest}
+                            backtestProgress={backtestProgress}
                             isDisabled={!isBinanceConnected || (analysisEngine === 'gemini' && !isGeminiConnected)}
                             isManualDisabled={!isBinanceConnected || isLoading || !isGeminiConnected}
                         />

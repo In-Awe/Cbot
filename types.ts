@@ -1,20 +1,16 @@
 export interface StrategyConfig {
-    exchange: string;
     trading_pairs: string[];
     total_capital_usd: number;
-    kelly_fraction: number; // This will now be the base fraction
     max_concurrent_trades: number;
-    entry_window_s: number;
-    exit_timeout_s: number;
-    timeframes: string[]; // Primary timeframe for signals
 
-    // New Regime and Calibration Settings
-    regime_trend_timeframe_h: number; // Timeframe in hours for trend analysis
-    regime_trend_fast_ema: number;
-    regime_trend_slow_ema: number;
-    regime_volatility_atr_period: number;
-    regime_volatility_high_threshold_pct: number; // ATR as % of price
-    regime_volatility_low_threshold_pct: number; // ATR as % of price
+    // High-level risk management for the Adaptive Kelly Bot
+    base_kelly_fraction: number; // User-controlled safety multiplier for the Kelly bet size.
+    max_bet_pct: number;      // Hard cap on position size as a percentage of total capital.
+    
+    // Bot's internal learning parameters (less frequently changed)
+    fractional_kelly: number; // Additional shrinkage factor applied to the raw Kelly fraction.
+    min_samples_for_bucket: number; // Minimum historical trades required to fully trust empirical win rates.
+    ewma_alpha: number;       // The learning rate (smoothing factor) for updating win-rate estimates.
 }
 
 export interface MarketRegime {
@@ -23,35 +19,36 @@ export interface MarketRegime {
     details: {
         trend_ema_fast?: number;
         trend_ema_slow?: number;
-        volatility_atr_pct?: number;
+        volatility_atr_pct?: string; // Stored as string for display
     }
 }
 
 
 export interface TimeframeAnalysis {
     timeframe: string;
-    signal: 'bull' | 'bear' | 'neutral' | 'error';
     confidence: number;
-    weight?: number;
-    error?: string;
+    signal: 'bull' | 'bear' | 'hold' | 'neutral' | 'error';
+    score?: number; // Optional as Gemini doesn't provide it.
+    samples?: number; // Optional as Gemini doesn't provide it.
     details?: Record<string, string | number | MarketRegime>;
+    error?: string | null; // From Gemini
 }
 
 export interface Signal {
     pair: string;
     action: 'buy' | 'sell' | 'hold';
-    confidence: number; // This is now the calibrated win probability
-    score: number;
+    // Aggregate values
+    confidence: number; // This is now the aggregate win probability
+    strength: number; // Aggregate score strength
+    betSizeUSD?: number;
+    // Base data
     last_price: number | null;
     take_profit: number | null;
     stop_loss: number | null;
+    // Breakdown
     meta: TimeframeAnalysis[];
     note?: string;
-    suggested_take_profit_pct?: number;
-    suggested_stop_loss_pct?: number;
-    betSizeUSD?: number;
     regime?: MarketRegime;
-    calibrated_win_p?: number;
 }
 
 export interface Trade {
@@ -81,7 +78,7 @@ export interface AnalysisLogEntry {
     meta: TimeframeAnalysis[];
 }
 
-export type SimulationStatus = 'stopped' | 'running' | 'paused' | 'warming up';
+export type SimulationStatus = 'stopped' | 'running' | 'paused' | 'warming up' | 'backtesting' | 'backtest_complete';
 
 export interface TerminalLogEntry {
     id: number;

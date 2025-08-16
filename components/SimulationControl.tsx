@@ -16,6 +16,8 @@ interface SimulationControlProps {
     onAdvance: () => void;
     onManualAnalysis: () => void;
     onEngineChange: (engine: AnalysisEngine) => void;
+    onRunBacktest: () => void;
+    backtestProgress: number;
     isDisabled: boolean;
     isManualDisabled: boolean;
 }
@@ -30,17 +32,34 @@ const ControlButton: React.FC<{onClick: () => void, disabled: boolean, children:
     </button>
 );
 
+const getStatusText = (status: SimulationStatus) => {
+    if (status === 'backtest_complete') return 'Backtest Complete';
+    return status;
+}
 
-export const SimulationControl: React.FC<SimulationControlProps> = ({ status, analysisEngine, onPlay, onPause, onStop, onAdvance, onManualAnalysis, onEngineChange, isDisabled, isManualDisabled }) => {
+
+export const SimulationControl: React.FC<SimulationControlProps> = ({ status, analysisEngine, onPlay, onPause, onStop, onAdvance, onManualAnalysis, onEngineChange, onRunBacktest, backtestProgress, isDisabled, isManualDisabled }) => {
+    
+    const isLiveMode = status === 'running' || status === 'warming up';
+    const canStartLive = status === 'stopped' || status === 'paused' || status === 'backtest_complete';
+    const canStop = status !== 'stopped';
+    const canRunBacktest = status === 'stopped' || status === 'backtest_complete';
+
     return (
         <Card>
             <h3 className="text-lg font-semibold text-cyan-400 mb-4">Simulation Control</h3>
             <div className="space-y-4">
                 <div className="flex items-center justify-center bg-gray-900/50 rounded-lg p-2">
                     <p className="text-sm font-medium text-gray-300">
-                        Status: <span className={`font-bold text-white capitalize ${status === 'warming up' ? 'text-yellow-400 animate-pulse' : ''}`}>{status}</span>
+                        Status: <span className={`font-bold text-white capitalize ${status === 'warming up' || status === 'backtesting' ? 'text-yellow-400 animate-pulse' : ''}`}>{getStatusText(status)}</span>
                     </p>
                 </div>
+                
+                 {status === 'backtesting' && (
+                    <div className="w-full bg-gray-700 rounded-full h-2.5">
+                        <div className="bg-cyan-500 h-2.5 rounded-full" style={{width: `${backtestProgress}%`}}></div>
+                    </div>
+                )}
                 
                 <div className="flex items-center bg-gray-900/50 rounded-lg p-1">
                     <button 
@@ -60,26 +79,24 @@ export const SimulationControl: React.FC<SimulationControlProps> = ({ status, an
                 </div>
 
                 <div className="flex gap-2">
-                    {status === 'running' || status === 'warming up' ? (
+                    {isLiveMode ? (
                         <ControlButton onClick={onPause} disabled={isDisabled} className="bg-yellow-600 hover:bg-yellow-500 text-white">
                             <PauseIcon /> Pause
                         </ControlButton>
                     ) : (
-                         <ControlButton onClick={onPlay} disabled={isDisabled} className="bg-green-600 hover:bg-green-500 text-white">
-                            <PlayIcon /> {status === 'paused' ? 'Resume' : 'Play'}
+                         <ControlButton onClick={onPlay} disabled={isDisabled || !canStartLive} className="bg-green-600 hover:bg-green-500 text-white">
+                            <PlayIcon /> {status === 'paused' ? 'Resume' : 'Start Live'}
                         </ControlButton>
                     )}
-                     <ControlButton onClick={onStop} disabled={status === 'stopped'} className="bg-red-600 hover:bg-red-500 text-white">
+                     <ControlButton onClick={onStop} disabled={!canStop} className="bg-red-600 hover:bg-red-500 text-white">
                         <StopIcon /> Stop
                     </ControlButton>
                 </div>
                 <div className="space-y-2">
-                    {(status === 'paused' || status === 'stopped') && (
-                        <Button onClick={onAdvance} disabled={isDisabled} variant="secondary" className="w-full flex items-center justify-center gap-2">
-                            <ForwardIcon /> Advance 1 Tick
-                        </Button>
-                    )}
-                    <Button onClick={onManualAnalysis} disabled={isManualDisabled || analysisEngine === 'internal'} variant="secondary" className="w-full">
+                    <Button onClick={onRunBacktest} disabled={isDisabled || !canRunBacktest} variant="secondary" className="w-full">
+                       Run Backtest
+                    </Button>
+                     <Button onClick={onManualAnalysis} disabled={isManualDisabled || analysisEngine === 'internal'} variant="secondary" className="w-full">
                         Manual Gemini Analysis
                     </Button>
                 </div>

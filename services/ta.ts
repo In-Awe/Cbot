@@ -142,34 +142,23 @@ export const calculateMACD = (prices: number[], fastPeriod = 12, slowPeriod = 26
 };
 
 /**
- * Calculates the Average True Range (ATR).
+ * Calculates the Average True Range (ATR) using a Simple Moving Average.
  * @param candles - Array of candle objects with high, low, close properties.
  * @param period - The lookback period, typically 14.
  * @returns An array of ATR values.
  */
-export const calculateATR = (candles: { high: number, low: number, close: number }[], period: number): number[] => {
-    if (candles.length <= period) return [];
+export const calculateATR = (candles: { high: number; low: number; close: number }[], period: number): number[] => {
+    if (candles.length <= 1) return [];
 
     const trueRanges: number[] = [];
     for (let i = 1; i < candles.length; i++) {
         const high = candles[i].high;
         const low = candles[i].low;
-        const prevClose = candles[i-1].close;
+        const prevClose = candles[i - 1].close;
         const tr = Math.max(high - low, Math.abs(high - prevClose), Math.abs(low - prevClose));
         trueRanges.push(tr);
     }
-
-    const atr: number[] = [];
-    // First ATR is a simple average of the first 'period' TRs
-    let sum = trueRanges.slice(0, period).reduce((a, b) => a + b, 0);
-    let prevAtr = sum / period;
-    atr.push(prevAtr);
     
-    for (let i = period; i < trueRanges.length; i++) {
-        const currentAtr = (prevAtr * (period - 1) + trueRanges[i]) / period;
-        atr.push(currentAtr);
-        prevAtr = currentAtr;
-    }
-
-    return atr;
+    // Use SMA on True Range, which is what the Python script does
+    return calculateSMA(trueRanges, period);
 };

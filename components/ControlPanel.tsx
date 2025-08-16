@@ -4,7 +4,7 @@ import { Card } from './ui/Card';
 import { Button } from './ui/Button';
 import { Input } from './ui/Input';
 import { Slider } from './ui/Slider';
-import { AVAILABLE_TIMEFRAMES, COMMON_TRADING_PAIRS } from '../constants';
+import { COMMON_TRADING_PAIRS } from '../constants';
 
 interface ControlPanelProps {
     initialConfig: StrategyConfig;
@@ -45,6 +45,11 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({ initialConfig, onCon
             [name]: type === 'number' ? parseFloat(value) : value,
         }));
     };
+    
+    const handleSliderChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const { name, value } = e.target;
+        setLocalConfig(prev => ({ ...prev, [name]: parseFloat(value) }));
+    };
 
     const handlePairInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         const value = e.target.value.toUpperCase();
@@ -69,21 +74,12 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({ initialConfig, onCon
         setLocalConfig(prev => ({...prev, trading_pairs: prev.trading_pairs.filter(p => p !== pairToRemove)}));
     };
 
-    const handleTimeframeChange = (timeframe: string) => {
-        setLocalConfig(prev => {
-            const newTimeframes = prev.timeframes.includes(timeframe)
-                ? prev.timeframes.filter(tf => tf !== timeframe)
-                : [...prev.timeframes, timeframe];
-            return { ...prev, timeframes: newTimeframes };
-        });
-    };
-
     return (
         <Card>
             <h2 className="text-2xl font-bold text-gray-100 mb-6">Strategy Configuration</h2>
             <form className="space-y-6">
                 <div>
-                    <SectionTitle>Market & Risk</SectionTitle>
+                    <SectionTitle>Market & Capital</SectionTitle>
                     <div className="space-y-4">
                         <div className="relative">
                             <Label htmlFor="trading_pairs">Trading Pairs</Label>
@@ -116,59 +112,29 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({ initialConfig, onCon
                                 </ul>
                             )}
                         </div>
-                        <div className="grid grid-cols-2 gap-4">
-                            <div>
-                                <Label htmlFor="total_capital_usd">Total Capital (USD)</Label>
-                                <Input id="total_capital_usd" name="total_capital_usd" type="number" value={localConfig.total_capital_usd} onChange={handleInputChange} disabled={isSimulating}/>
-                            </div>
-                            <div>
-                                <Label htmlFor="max_concurrent_trades">Max Open Trades</Label>
-                                <Input id="max_concurrent_trades" name="max_concurrent_trades" type="number" step="1" value={localConfig.max_concurrent_trades} onChange={handleInputChange} disabled={isSimulating}/>
-                            </div>
-                        </div>
                         <div>
-                            <Label htmlFor="kelly_fraction">Base Kelly Fraction ({localConfig.kelly_fraction})</Label>
-                            <Slider id="kelly_fraction" name="kelly_fraction" min="0.1" max="1" step="0.05" value={localConfig.kelly_fraction} onChange={handleInputChange} disabled={isSimulating}/>
+                            <Label htmlFor="total_capital_usd">Total Capital (USD)</Label>
+                            <Input id="total_capital_usd" name="total_capital_usd" type="number" value={localConfig.total_capital_usd} onChange={handleInputChange} disabled={isSimulating}/>
                         </div>
                     </div>
                 </div>
 
                  <div>
-                    <SectionTitle>Regime Analysis</SectionTitle>
-                     <div className="grid grid-cols-2 gap-x-4 gap-y-3">
-                         <div><Label htmlFor="regime_trend_timeframe_h">Trend TF (Hours)</Label><Input id="regime_trend_timeframe_h" name="regime_trend_timeframe_h" type="number" value={localConfig.regime_trend_timeframe_h} onChange={handleInputChange} disabled={isSimulating}/></div>
-                         <div><Label htmlFor="regime_volatility_atr_period">ATR Period</Label><Input id="regime_volatility_atr_period" name="regime_volatility_atr_period" type="number" value={localConfig.regime_volatility_atr_period} onChange={handleInputChange} disabled={isSimulating}/></div>
-                         <div><Label htmlFor="regime_trend_fast_ema">Fast EMA</Label><Input id="regime_trend_fast_ema" name="regime_trend_fast_ema" type="number" value={localConfig.regime_trend_fast_ema} onChange={handleInputChange} disabled={isSimulating}/></div>
-                         <div><Label htmlFor="regime_trend_slow_ema">Slow EMA</Label><Input id="regime_trend_slow_ema" name="regime_trend_slow_ema" type="number" value={localConfig.regime_trend_slow_ema} onChange={handleInputChange} disabled={isSimulating}/></div>
-                         <div><Label htmlFor="regime_volatility_high_threshold_pct">High Vol %</Label><Input id="regime_volatility_high_threshold_pct" name="regime_volatility_high_threshold_pct" type="number" step="0.1" value={localConfig.regime_volatility_high_threshold_pct} onChange={handleInputChange} disabled={isSimulating}/></div>
-                         <div><Label htmlFor="regime_volatility_low_threshold_pct">Low Vol %</Label><Input id="regime_volatility_low_threshold_pct" name="regime_volatility_low_threshold_pct" type="number" step="0.1" value={localConfig.regime_volatility_low_threshold_pct} onChange={handleInputChange} disabled={isSimulating}/></div>
-                     </div>
-                </div>
-
-                <div>
-                    <SectionTitle>Bot Settings</SectionTitle>
+                    <SectionTitle>Risk Management</SectionTitle>
                      <div className="space-y-4">
                         <div>
-                           <Label htmlFor="timeframes">Signal Timeframe (Primary)</Label>
-                            <div className="grid grid-cols-4 gap-2 mt-2">
-                                {AVAILABLE_TIMEFRAMES.map(tf => (
-                                    <button
-                                        type="button"
-                                        key={tf}
-                                        onClick={() => handleTimeframeChange(tf)}
-                                        className={`px-2 py-1 text-xs rounded transition-colors ${
-                                            localConfig.timeframes.includes(tf) 
-                                            ? 'bg-cyan-500 text-white font-semibold' 
-                                            : 'bg-gray-700 hover:bg-gray-600'
-                                        } ${isSimulating ? 'cursor-not-allowed opacity-70' : ''}`}
-                                        disabled={isSimulating}
-                                    >
-                                        {tf}
-                                    </button>
-                                ))}
-                            </div>
+                            <Label htmlFor="base_kelly_fraction" tooltip="A safety multiplier applied to all Kelly bets. 0.5 is recommended.">Base Kelly Fraction ({localConfig.base_kelly_fraction})</Label>
+                            <Slider id="base_kelly_fraction" name="base_kelly_fraction" min="0.1" max="1" step="0.05" value={localConfig.base_kelly_fraction} onChange={handleSliderChange} disabled={isSimulating}/>
                         </div>
-                    </div>
+                        <div>
+                            <Label htmlFor="max_bet_pct" tooltip="The absolute maximum percentage of capital to risk on a single trade.">Max Bet % ({localConfig.max_bet_pct * 100}%)</Label>
+                            <Slider id="max_bet_pct" name="max_bet_pct" min="0.005" max="0.1" step="0.005" value={localConfig.max_bet_pct} onChange={handleSliderChange} disabled={isSimulating}/>
+                        </div>
+                         <div>
+                            <Label htmlFor="max_concurrent_trades">Max Open Trades</Label>
+                             <Input id="max_concurrent_trades" name="max_concurrent_trades" type="number" step="1" min="1" value={localConfig.max_concurrent_trades} onChange={handleInputChange} disabled={isSimulating} />
+                        </div>
+                     </div>
                 </div>
                 
                 <Button type="button" onClick={onAnalyze} className="w-full" variant="secondary">

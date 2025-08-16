@@ -1,4 +1,4 @@
-import { GoogleGenAI, Type } from "@google/genai";
+import { GoogleGenAI, Type, GenerateContentResponse } from "@google/genai";
 import type { StrategyConfig, Signal, Trade, PriceHistoryLogEntry } from '../types';
 
 const PYTHON_STRATEGY_CONTEXT = `
@@ -227,7 +227,7 @@ export const generateTradingSignals = async (
     });
 
     try {
-        const response = await withRetry(generate);
+        const response: GenerateContentResponse = await withRetry(generate);
         const jsonText = response.text.trim();
         return JSON.parse(jsonText) as Signal[];
     } catch (e) {
