@@ -114,44 +114,29 @@ export const fetchHistorical1mKlines = async (pair: string, hours: number): Prom
     }));
 };
 
-export const resampleKlinesTo15sCandles = (klines: PriceHistoryLogEntry[], pair: string): PriceHistoryLogEntry[] => {
-    if (klines.length === 0) return [];
 
-    const candles: PriceHistoryLogEntry[] = [];
-    const intervalMs = 15 * 1000;
+export const fetchHistorical1sKlines = async (pair: string, hours: number): Promise<PriceHistoryLogEntry[]> => {
+    if (typeof pair !== 'string' || pair.trim().length === 0) return [];
     
-    klines.sort((a, b) => a.id - b.id);
+    const symbol = pair.replace('/', '');
+    const endTime = Date.now();
+    const startTime = endTime - hours * 60 * 60 * 1000;
 
-    let currentCandleTimestamp = Math.floor(klines[0].id / intervalMs) * intervalMs;
-    let candleKlines: PriceHistoryLogEntry[] = [];
+    const klines = await fetchPaginatedKlines(symbol, '1s', startTime, endTime);
 
-    for (const kline of klines) {
-        if (kline.id >= currentCandleTimestamp + intervalMs) {
-            if (candleKlines.length > 0) {
-                const open = candleKlines[0].open;
-                const close = candleKlines[candleKlines.length - 1].close;
-                const high = Math.max(...candleKlines.map(k => k.high));
-                const low = Math.min(...candleKlines.map(k => k.low));
-                const volume = candleKlines.reduce((sum, k) => sum + k.volume, 0);
-                candles.push({ id: currentCandleTimestamp, timestamp: new Date(currentCandleTimestamp), pair, open, high, low, close, volume, interval: '15s' });
-            }
-            candleKlines = [];
-            currentCandleTimestamp = Math.floor(kline.id / intervalMs) * intervalMs;
-        }
-        candleKlines.push(kline);
-    }
-    
-    if (candleKlines.length > 0) {
-        const open = candleKlines[0].open;
-        const close = candleKlines[candleKlines.length - 1].close;
-        const high = Math.max(...candleKlines.map(k => k.high));
-        const low = Math.min(...candleKlines.map(k => k.low));
-        const volume = candleKlines.reduce((sum, k) => sum + k.volume, 0);
-        candles.push({ id: currentCandleTimestamp, timestamp: new Date(currentCandleTimestamp), pair, open, high, low, close, volume, interval: '15s' });
-    }
-
-    return candles;
+    return klines.map(k => ({
+        id: k[0],
+        timestamp: new Date(k[0]),
+        pair,
+        open: parseFloat(k[1]),
+        high: parseFloat(k[2]),
+        low: parseFloat(k[3]),
+        close: parseFloat(k[4]),
+        volume: parseFloat(k[5]),
+        interval: '1s',
+    }));
 };
+
 
 export const fetchKlinesSince = async (pair: string, interval: '1s' | '1m', startTime: number): Promise<PriceHistoryLogEntry[]> => {
     const symbol = pair.replace('/', '');
@@ -172,20 +157,4 @@ export const fetchKlinesSince = async (pair: string, interval: '1s' | '1m', star
         volume: parseFloat(k[5]),
         interval,
     }));
-};
-
-export const fetchHistoricalHighResCandles = async (pair: string, hours: number): Promise<PriceHistoryLogEntry[]> => {
-    if (typeof pair !== 'string' || pair.trim().length === 0) return [];
-    
-    const symbol = pair.replace('/', '');
-    const endTime = Date.now();
-    const startTime = endTime - hours * 60 * 60 * 1000;
-    
-    const klines1sRaw = await fetchPaginatedKlines(symbol, '1s', startTime, endTime);
-    const klines1s = klines1sRaw.map(k => ({
-        id: k[0], timestamp: new Date(k[0]), pair, open: parseFloat(k[1]), high: parseFloat(k[2]),
-        low: parseFloat(k[3]), close: parseFloat(k[4]), volume: parseFloat(k[5]), interval: '1s' as const
-    }));
-
-    return resampleKlinesTo15sCandles(klines1s, pair);
 };

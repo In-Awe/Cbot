@@ -1,11 +1,15 @@
+
 import React from 'react';
-import type { PendingOrder } from '../types';
-import { PendingOrderCard } from './SignalCard';
+import type { TradeSetup, SimulationStatus } from '../types';
+import { SetupCard } from './SignalCard';
 import { Card } from './ui/Card';
 
-interface SignalDashboardProps {
-    pendingOrders: PendingOrder[];
+interface SetupDashboardProps {
+    setups: TradeSetup[];
     isLoading: boolean;
+    status: SimulationStatus;
+    dailyTradeCount: number;
+    dailyTradeLimit: number;
 }
 
 const SkeletonCard: React.FC = () => (
@@ -22,29 +26,53 @@ const SkeletonCard: React.FC = () => (
 );
 
 
-export const SignalDashboard: React.FC<SignalDashboardProps> = ({ pendingOrders, isLoading }) => {
+export const SetupDashboard: React.FC<SetupDashboardProps> = ({ setups, isLoading, status, dailyTradeCount, dailyTradeLimit }) => {
     
+    const dailyLimitReached = dailyTradeCount >= dailyTradeLimit;
+    const hasSetups = setups.length > 0;
+
+    const getHelperText = () => {
+        if (isLoading) return null;
+        if (dailyLimitReached) {
+            return "Daily trade limit reached. The bot will resume scanning tomorrow.";
+        }
+        if (status === 'stopped' || status === 'csv_complete') {
+            return "Start live analysis or run a CSV simulation to find trade setups.";
+        }
+        if (!hasSetups) {
+            return "No high-conviction setups found. The bot is actively monitoring the market.";
+        }
+        return null;
+    }
+
+    const helperText = getHelperText();
+
     return (
         <Card>
-            <h2 className="text-2xl font-bold text-gray-100 mb-6">Pending Orders</h2>
+            <div className="flex justify-between items-center mb-6">
+                <h2 className="text-2xl font-bold text-gray-100">High-Conviction Setups</h2>
+                <div className="text-sm text-gray-400">
+                    Daily Trades: <span className="font-bold text-white">{dailyTradeCount} / {dailyTradeLimit}</span>
+                </div>
+            </div>
             {isLoading && (
                 <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
                     {[...Array(3)].map((_, i) => <SkeletonCard key={i} />)}
                 </div>
             )}
 
-            {!isLoading && pendingOrders.length === 0 && (
+            {!isLoading && helperText && (
                 <div className="text-center py-10">
-                    <p className="text-gray-400">No pending orders. The bot is waiting for a volatility squeeze.</p>
+                    <p className="text-gray-400">{helperText}</p>
                 </div>
             )}
             
-            {!isLoading && pendingOrders.length > 0 && (
+            {!isLoading && hasSetups && !dailyLimitReached && (
                 <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
-                    {pendingOrders.map(order => (
-                        <PendingOrderCard 
-                            key={order.pair} 
-                            order={order}
+                    {setups.map(setup => (
+                        <SetupCard 
+                            key={setup.timestamp.getTime()} 
+                            setup={setup}
                         />
                     ))}
                 </div>

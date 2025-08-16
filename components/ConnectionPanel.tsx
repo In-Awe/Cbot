@@ -6,12 +6,9 @@ import { Button } from './ui/Button';
 import { SimulationStatus } from '../types';
 
 interface ConnectionPanelProps {
-    isGeminiConnected: boolean;
     isBinanceConnected: boolean;
     simulationStatus: SimulationStatus;
-    onGeminiConnect: (geminiApiKey: string) => void;
     onBinanceConnect: (binanceApiKey: string, binanceApiSecret: string) => void;
-    onGeminiDisconnect: () => void;
     onBinanceDisconnect: () => void;
 }
 
@@ -30,63 +27,25 @@ const StatusIndicator: React.FC<{ isConnected: boolean }> = ({ isConnected }) =>
 
 
 export const ConnectionPanel: React.FC<ConnectionPanelProps> = ({
-    isGeminiConnected,
     isBinanceConnected,
     simulationStatus,
-    onGeminiConnect,
     onBinanceConnect,
-    onGeminiDisconnect,
     onBinanceDisconnect,
 }) => {
-    const [geminiKey, setGeminiKey] = useState('');
     const [binanceKey, setBinanceKey] = useState('');
     const [binanceSecret, setBinanceSecret] = useState('');
-
-    const handleGeminiConnectClick = () => {
-        if (geminiKey) onGeminiConnect(geminiKey);
-        else alert('Please enter your Gemini API Key.');
-    };
 
     const handleBinanceConnectClick = () => {
         if (binanceKey) onBinanceConnect(binanceKey, binanceSecret);
         else alert('Please enter your Binance API Key.');
     };
     
-    const isSimulating = simulationStatus !== 'stopped';
+    const isSimulating = simulationStatus !== 'stopped' && simulationStatus !== 'csv_complete';
 
     return (
         <Card>
             <h3 className="text-lg font-semibold text-cyan-400 mb-4">Connection Manager</h3>
             <div className="space-y-6">
-                {/* Gemini Section */}
-                <div className="space-y-3">
-                    <div className="flex justify-between items-center">
-                        <h4 className="font-semibold text-gray-200">Gemini AI Engine</h4>
-                        <StatusIndicator isConnected={isGeminiConnected} />
-                    </div>
-                    {isGeminiConnected ? (
-                        <Button onClick={onGeminiDisconnect} variant="danger" className="w-full" disabled={isSimulating}>
-                            Disconnect Gemini
-                        </Button>
-                    ) : (
-                        <>
-                            <Label htmlFor="gemini_api_key">Gemini API Key</Label>
-                            <Input 
-                                id="gemini_api_key" 
-                                type="password" 
-                                placeholder="For AI Analysis"
-                                value={geminiKey}
-                                onChange={(e) => setGeminiKey(e.target.value)}
-                                disabled={isGeminiConnected}
-                            />
-                            <Button onClick={handleGeminiConnectClick} className="w-full">
-                                Connect Gemini
-                            </Button>
-                        </>
-                    )}
-                </div>
-
-                {/* Binance Section */}
                 <div className="space-y-3">
                     <div className="flex justify-between items-center">
                         <h4 className="font-semibold text-gray-200">Binance Market Data</h4>
@@ -111,7 +70,7 @@ export const ConnectionPanel: React.FC<ConnectionPanelProps> = ({
                             <Input 
                                 id="binance_api_secret" 
                                 type="password" 
-                                placeholder="(Optional for public data)"
+                                placeholder="Required for live trading"
                                 value={binanceSecret}
                                 onChange={(e) => setBinanceSecret(e.target.value)}
                                 disabled={isBinanceConnected}

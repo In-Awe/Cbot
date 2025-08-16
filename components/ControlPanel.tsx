@@ -47,7 +47,7 @@ const AssetToggle: React.FC<{label: string, isEnabled: boolean, onToggle: (pair:
 
 export const ControlPanel: React.FC<ControlPanelProps> = ({ initialConfig, onConfigChange, onAnalyze, isLoading, isSimulating }) => {
     const [localConfig, setLocalConfig] = useState(initialConfig);
-    const availablePairs = ["XRP/USDT", "SOL/USDT", "BNB/USDT"];
+    const availablePairs = ["XRP/USDT", "SOL/USDT", "BNB/USDT", "BTC/USDT"];
     
     useEffect(() => {
         onConfigChange(localConfig);
@@ -111,7 +111,7 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({ initialConfig, onCon
                      </div>
                 </div>
                 
-                <Button type="button" onClick={onAnalyze} className="w-full" variant="secondary">
+                <Button type="button" onClick={onAnalyze} className="w-full" variant="secondary" disabled={true}>
                     Generate Performance Report
                 </Button>
             </form>

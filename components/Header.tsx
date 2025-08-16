@@ -11,7 +11,7 @@ export const Header: React.FC = () => {
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
                         </svg>
                         <h1 className="text-xl sm:text-2xl font-bold text-gray-100 tracking-tight">
-                            Gemini Trading Strategy Dashboard
+                            BTC/USDT Trader
                         </h1>
                     </div>
                 </div>

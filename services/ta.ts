@@ -36,131 +36,40 @@ export const calculateWilderMA = (prices: number[], period: number): number[] =>
  */
 export const calculateSMA = (prices: number[], period: number): number[] => {
     if (prices.length < period) return [];
-    const sma: number[] = new Array(prices.length).fill(0);
-    for (let i = period - 1; i < prices.length; i++) {
-        const slice = prices.slice(i - period + 1, i + 1);
-        const sum = slice.reduce((a, b) => a + b, 0);
-        sma[i] = sum / period;
+    const sma: number[] = new Array(prices.length - period + 1).fill(0);
+    let sum = 0;
+    for(let i = 0; i < period; i++) {
+        sum += prices[i];
     }
-    return sma.slice(period - 1);
+    sma[0] = sum / period;
+
+    for (let i = period; i < prices.length; i++) {
+        sum = sum - prices[i-period] + prices[i];
+        sma[i - period + 1] = sum / period;
+    }
+    return sma;
 };
 
 /**
  * Calculates the Exponential Moving Average (EMA) for a given period.
  * @param prices - Array of numbers (e.g., closing prices).
  * @param period - The lookback period for the EMA.
- * @returns An array of EMA values.
+ * @returns An array of EMA values, not padded.
  */
 export const calculateEMA = (prices: number[], period: number): number[] => {
-    if (prices.length < period) return Array(prices.length).fill(0);
+    if (prices.length < period) return [];
     const multiplier = 2 / (period + 1);
-    const ema: number[] = new Array(prices.length).fill(0);
+    const ema: number[] = [];
 
     let sma = prices.slice(0, period).reduce((a, b) => a + b, 0) / period;
-    ema[period - 1] = sma;
+    ema.push(sma);
 
     for (let i = period; i < prices.length; i++) {
-        ema[i] = (prices[i] - ema[i-1]) * multiplier + ema[i-1];
+        const nextEma = (prices[i] - ema[ema.length-1]) * multiplier + ema[ema.length-1];
+        ema.push(nextEma);
     }
     
     return ema;
-};
-
-/**
- * Calculates the Relative Strength Index (RSI) for a given period.
- * @param prices - Array of numbers (e.g., closing prices).
- * @param period - The lookback period for the RSI.
- * @returns An array of RSI values.
- */
-export const calculateRSI = (prices: number[], period: number): number[] => {
-    if (prices.length <= period) return [];
-
-    const rsi: number[] = [];
-    let avgGain = 0;
-    let avgLoss = 0;
-
-    for (let i = 1; i <= period; i++) {
-        const change = prices[i] - prices[i - 1];
-        if (change > 0) {
-            avgGain += change;
-        } else {
-            avgLoss -= change;
-        }
-    }
-    avgGain /= period;
-    avgLoss /= period;
-
-    let rs = avgLoss === 0 ? Infinity : avgGain / avgLoss;
-    rsi.push(100 - 100 / (1 + rs));
-
-    for (let i = period + 1; i < prices.length; i++) {
-        const change = prices[i] - prices[i - 1];
-        let gain = change > 0 ? change : 0;
-        let loss = change < 0 ? -change : 0;
-
-        avgGain = (avgGain * (period - 1) + gain) / period;
-        avgLoss = (avgLoss * (period - 1) + loss) / period;
-
-        rs = avgLoss === 0 ? Infinity : avgGain / avgLoss;
-        rsi.push(100 - 100 / (1 + rs));
-    }
-    
-    return rsi;
-};
-
-
-export const calculateADX = (candles: { high: number; low: number; close: number }[], period: number) => {
-    if (candles.length < period + 1) return { adx: [], pdi: [], mdi: [] };
-
-    const plusDMs: number[] = [0];
-    const minusDMs: number[] = [0];
-    const trs: number[] = [0];
-
-    for (let i = 1; i < candles.length; i++) {
-        const upMove = candles[i].high - candles[i - 1].high;
-        const downMove = candles[i - 1].low - candles[i].low;
-
-        plusDMs.push(upMove > downMove && upMove > 0 ? upMove : 0);
-        minusDMs.push(downMove > upMove && downMove > 0 ? downMove : 0);
-
-        trs.push(Math.max(
-            candles[i].high - candles[i].low,
-            Math.abs(candles[i].high - candles[i - 1].close),
-            Math.abs(candles[i].low - candles[i - 1].close)
-        ));
-    }
-
-    const smoothedPlusDM = calculateWilderMA(plusDMs, period);
-    const smoothedMinusDM = calculateWilderMA(minusDMs, period);
-    const smoothedTR = calculateWilderMA(trs, period);
-
-    const pdis: number[] = [];
-    const mdis: number[] = [];
-    const dxs: number[] = [];
-
-    for (let i = 0; i < candles.length; i++) {
-        if (smoothedTR[i] > 0) {
-            pdis[i] = 100 * (smoothedPlusDM[i] / smoothedTR[i]);
-            mdis[i] = 100 * (smoothedMinusDM[i] / smoothedTR[i]);
-            const sum = pdis[i] + mdis[i];
-            dxs[i] = sum === 0 ? 0 : (100 * Math.abs(pdis[i] - mdis[i])) / sum;
-        } else {
-            pdis[i] = 0;
-            mdis[i] = 0;
-            dxs[i] = 0;
-        }
-    }
-
-    const adx = calculateWilderMA(dxs, period);
-    
-    const validLength = candles.length - (period -1) - (period-1);
-    if(validLength <= 0) return { adx: [], pdi: [], mdi: [] };
-
-    return { 
-      adx: adx.slice(adx.length - validLength),
-      pdi: pdis.slice(pdis.length - validLength),
-      mdi: mdis.slice(mdis.length - validLength)
-    };
 };
 
 /**
@@ -196,42 +105,53 @@ export const calculateBollingerBands = (prices: number[], period: number, stdDev
     return { middle, upper, lower, bbw };
 };
 
+/**
+ * Calculates the Relative Strength Index (RSI).
+ * @param prices - Array of numbers (e.g., closing prices).
+ * @param period - The lookback period for the RSI.
+ * @returns An array of RSI values, not padded.
+ */
+export const calculateRSI = (prices: number[], period: number): number[] => {
+    if (prices.length <= period) return [];
 
-export const calculateMACD = (prices: number[], fastPeriod = 12, slowPeriod = 26, signalPeriod = 9) => {
-    const emaFast = calculateEMA(prices, fastPeriod);
-    const emaSlow = calculateEMA(prices, slowPeriod);
+    const rsi: number[] = [];
+    const changes = prices.slice(1).map((price, i) => price - prices[i]);
     
-    // Align arrays
-    const alignedEmaFast = emaFast.slice(slowPeriod - fastPeriod);
-    const alignedEmaSlow = emaSlow;
+    let gains = 0;
+    let losses = 0;
 
-    const macdLine = alignedEmaFast.map((val, i) => val - alignedEmaSlow[i]);
-    const signalLine = calculateEMA(macdLine, signalPeriod);
-    
-    const alignedMacdLine = macdLine.slice(signalPeriod-1);
-    const histogram = alignedMacdLine.map((val, i) => val - signalLine[i]);
+    // Initial average gain/loss
+    for (let i = 0; i < period; i++) {
+        if (changes[i] > 0) {
+            gains += changes[i];
+        } else {
+            losses -= changes[i];
+        }
+    }
 
-    return {
-        MACD: alignedMacdLine,
-        signal: signalLine,
-        histogram: histogram,
-    };
-};
+    let avgGain = gains / period;
+    let avgLoss = losses / period;
 
+    for (let i = period; i < changes.length + 1; i++) {
+        const rs = avgLoss === 0 ? 100 : avgGain / avgLoss;
+        const currentRsi = 100 - (100 / (1 + rs));
+        rsi.push(currentRsi);
 
-export const calculateATR = (candles: { high: number; low: number; close: number }[], period: number): number[] => {
-    if (candles.length <= 1) return [];
+        if (i < changes.length) {
+            const currentChange = changes[i];
+            let currentGain = 0;
+            let currentLoss = 0;
 
-    const trueRanges: number[] = [];
-    for (let i = 1; i < candles.length; i++) {
-        const high = candles[i].high;
-        const low = candles[i].low;
-        const prevClose = candles[i - 1].close;
-        const tr = Math.max(high - low, Math.abs(high - prevClose), Math.abs(low - prevClose));
-        trueRanges.push(tr);
+            if (currentChange > 0) {
+                currentGain = currentChange;
+            } else {
+                currentLoss = -currentChange;
+            }
+
+            avgGain = (avgGain * (period - 1) + currentGain) / period;
+            avgLoss = (avgLoss * (period - 1) + currentLoss) / period;
+        }
     }
     
-    if (trueRanges.length === 0) return [];
-
-    return calculateWilderMA(trueRanges, period).slice(period - 1);
+    return rsi;
 };

@@ -1,61 +1,44 @@
-
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { Header } from './components/Header';
-import { ControlPanel } from './components/ControlPanel';
-import { SignalDashboard } from './components/SignalDashboard';
+import { HeatTracker } from './components/HeatTracker';
 import { OpenPositions } from './components/OpenPositions';
 import { ConnectionPanel } from './components/ConnectionPanel';
 import { AnalysisLog } from './components/AnalysisLog';
 import { Terminal } from './components/Terminal';
 import { SimulationControl } from './components/SimulationControl';
-import { PriceHistoryLog } from './components/PriceHistoryLog';
-import { PredictionAccuracy } from './components/PredictionAccuracy';
+import { LivePriceFeed } from './components/PriceHistoryLog';
 import { LivePrices } from './components/LivePrices';
-import { ManualAnalysisModal } from './components/ManualAnalysisModal';
 import { BotStrategy } from './components/BotStrategy';
-import type { StrategyConfig, PendingOrder, Trade, AnalysisLogEntry, TerminalLogEntry, SimulationStatus, PriceHistoryLogEntry, PredictionAccuracyRecord, AnalysisEngine } from './types';
-import { generateTradingSignals, constructGeminiPrompt } from './services/geminiService';
-import { LeviathanBot } from './services/botService';
-import { fetchKlinesSince, resampleKlinesTo15sCandles, fetchHistorical1mKlines, fetchHistoricalHighResCandles } from './services/binanceService';
-import { addPriceHistory, getPriceHistory, getFullPriceHistory, getHistoryCounts, initDBForPairs, getLatestEntryTimestamp } from './services/dbService';
-import { DEFAULT_STRATEGY_CONFIG } from './constants';
-
-const PRICE_FETCH_INTERVAL = 15000; // 15 seconds
+import type { Trade, AnalysisLogEntry, TerminalLogEntry, SimulationStatus, PriceHistoryLogEntry, HeatScores } from './types';
+import { BtcUsdTrader } from './services/botService';
+import { fetchHistorical1mKlines, fetchHistorical1sKlines, fetchKlinesSince } from './services/binanceService';
+import { addPriceHistory, getPriceHistory, getFullPriceHistory, getHistoryCounts, initDBForPairs } from './services/dbService';
+import { exportToCsv } from './services/exportService';
 
 const App: React.FC = () => {
-    const [config, setConfig] = useState<StrategyConfig>(DEFAULT_STRATEGY_CONFIG);
-    const [pendingOrders, setPendingOrders] = useState<PendingOrder[]>([]);
     const [openTrades, setOpenTrades] = useState<Trade[]>([]);
     const [closedTrades, setClosedTrades] = useState<Trade[]>([]);
+    const [heatScores, setHeatScores] = useState<HeatScores | null>(null);
+    const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
     
-    const [displayPriceHistory, setDisplayPriceHistory] = useState<Record<string, PriceHistoryLogEntry[]>>({});
-    const [priceHistoryCounts, setPriceHistoryCounts] = useState<Record<string, number>>({});
-    const [livePrices, setLivePrices] = useState<Record<string, PriceHistoryLogEntry | undefined>>({});
+    const [liveCandles, setLiveCandles] = useState<PriceHistoryLogEntry[]>([]);
+    const [priceHistoryCounts, setPriceHistoryCounts] = useState<Record<string, number>>({ 'BTC/USDT': 0 });
+    const [livePrice, setLivePrice] = useState<PriceHistoryLogEntry | undefined>();
 
-    const [isLoading, setIsLoading] = useState<boolean>(false);
     const [error, setError] = useState<string | null>(null);
     const [simulationStatus, setSimulationStatus] = useState<SimulationStatus>('stopped');
-    const [backtestProgress, setBacktestProgress] = useState(0);
-    const [analysisEngine, setAnalysisEngine] = useState<AnalysisEngine>('internal');
+
     const [analysisLog, setAnalysisLog] = useState<AnalysisLogEntry[]>([]);
     const [terminalLog, setTerminalLog] = useState<TerminalLogEntry[]>([]);
-    const [geminiApiKey, setGeminiApiKey] = useState<string>('');
-    const [isGeminiConnected, setIsGeminiConnected] = useState(false);
     const [isBinanceConnected, setIsBinanceConnected] = useState(false);
 
-    const intervalRef = useRef<number | null>(null);
-    const priceFetchIntervalRef = useRef<number | null>(null);
-    const configRef = useRef(config);
-    const isBinanceConnectedRef = useRef(isBinanceConnected);
-    const isBacktestRunningRef = useRef(false);
-    const livePricesRef = useRef(livePrices);
-    const lastFetchTimestampsRef = useRef<Record<string, number>>({});
-    const botInstancesRef = useRef<Record<string, LeviathanBot>>({});
-
-    useEffect(() => { configRef.current = config; }, [config]);
-    useEffect(() => { isBinanceConnectedRef.current = isBinanceConnected; }, [isBinanceConnected]);
-    useEffect(() => { livePricesRef.current = livePrices; }, [livePrices]);
+    const mainIntervalRef = useRef<number | null>(null);
+    const botInstanceRef = useRef<BtcUsdTrader | null>(null);
+    const lastTickTsRef = useRef<number | null>(null);
     
+    const TRADING_PAIR = 'BTC/USDT';
+    const TICK_INTERVAL = 2000; // 2 seconds
+
     const addLog = useCallback((message: string, type: TerminalLogEntry['type'] = 'info', data?: any) => {
         const newEntry: TerminalLogEntry = {
             id: Date.now() + Math.random(),
@@ -68,260 +51,132 @@ const App: React.FC = () => {
     }, []);
 
     const refreshPriceHistoryFromDB = useCallback(async () => {
-        const pairs = configRef.current.trading_pairs;
-        const newDisplayHistory: Record<string, PriceHistoryLogEntry[]> = {};
-        for (const pair of pairs) {
-            newDisplayHistory[pair] = await getPriceHistory(pair, 100);
-        }
-        setDisplayPriceHistory(newDisplayHistory);
-        const counts = await getHistoryCounts(pairs);
+        const counts = await getHistoryCounts([TRADING_PAIR]);
         setPriceHistoryCounts(counts);
     }, []);
 
     useEffect(() => {
         const initialLoad = async () => {
-            addLog('App initialized. Loading data from storage.', 'info');
-            await initDBForPairs(config.trading_pairs);
+            addLog('App initialized for BTC/USDT trading.', 'info');
+            await initDBForPairs([TRADING_PAIR]);
             await refreshPriceHistoryFromDB();
         };
         initialLoad();
-    }, []);
-
-    const fetchAndStoreLiveCandles = useCallback(async (): Promise<void> => {
-        const currentConfig = configRef.current;
-        if (!isBinanceConnectedRef.current || currentConfig.trading_pairs.length === 0) {
-            setLivePrices({});
+    }, [addLog, refreshPriceHistoryFromDB]);
+    
+    const runMainTick = useCallback(async () => {
+        if (!botInstanceRef.current) {
+            addLog('Bot not initialized for analysis.', 'error');
             return;
         }
 
         try {
-            const results = await Promise.all(currentConfig.trading_pairs.map(async (pair) => {
-                const lastTimestamp = lastFetchTimestampsRef.current[pair] || (Date.now() - 30 * 1000);
-                const newKlines1s = await fetchKlinesSince(pair, '1s', lastTimestamp + 1);
-
-                if (newKlines1s.length === 0) return { pair, newCandles: [], latestCandle: undefined };
-
-                const newCandles15s = resampleKlinesTo15sCandles(newKlines1s, pair);
-                
-                if (newCandles15s.length > 0) {
-                    await addPriceHistory(pair, newCandles15s);
-                    lastFetchTimestampsRef.current[pair] = newKlines1s[newKlines1s.length - 1].id;
-                }
-                
-                return { pair, newCandles: newCandles15s, latestCandle: newCandles15s[newCandles15s.length - 1] };
-            }));
-
-            let shouldRefreshHistory = false;
-            const newLivePrices: Record<string, PriceHistoryLogEntry> = {};
-            results.forEach(({ pair, newCandles, latestCandle }) => {
-                if (newCandles.length > 0) shouldRefreshHistory = true;
-                const finalCandle = latestCandle || livePricesRef.current[pair];
-                if (finalCandle) newLivePrices[pair] = finalCandle;
-            });
+            // 1. Fetch latest 1-second data
+            const startTime = lastTickTsRef.current ? lastTickTsRef.current + 1 : Date.now() - 60 * 1000; // 1 min on first run
+            const newKlines = await fetchKlinesSince(TRADING_PAIR, '1s', startTime);
             
-            setLivePrices(prev => ({...prev, ...newLivePrices }));
+            if (newKlines.length > 0) {
+                lastTickTsRef.current = newKlines[newKlines.length - 1].id;
+                setLiveCandles(prev => [...newKlines, ...prev].slice(0, 300));
+                setLivePrice(newKlines[newKlines.length - 1]);
+                botInstanceRef.current.updateWithNewCandles(newKlines);
+            }
 
-            if (shouldRefreshHistory) {
+            // 2. Run Bot Analysis
+            addLog('Running bot analysis tick...', 'request');
+            const { heatScores: newHeatScores, newOneMinuteCandles } = botInstanceRef.current.runAnalysis();
+            
+            // 3. Persist new 1-minute candles
+            if (newOneMinuteCandles.length > 0) {
+                await addPriceHistory(TRADING_PAIR, newOneMinuteCandles);
                 await refreshPriceHistoryFromDB();
+                addLog(`Persisted ${newOneMinuteCandles.length} new 1-minute candle(s) to database.`, 'info');
             }
 
-        } catch(e) {
-            const error = e instanceof Error ? e.message : String(e);
-            addLog(`Failed to fetch live candles from Binance: ${error}`, 'error');
-        }
-    }, [addLog, refreshPriceHistoryFromDB]);
+            // 4. Update UI state
+            setHeatScores(newHeatScores);
+            setLastUpdated(new Date());
 
+            // 5. Log analysis and check for trades
+            const latestLivePrice = newKlines.length > 0 ? newKlines[newKlines.length - 1].close : livePrice?.close ?? 0;
+            
+            const dailyTradeLimit = botInstanceRef.current.getDailyTradeLimit();
+            const dailyTradeCount = botInstanceRef.current.getDailyTradeCount();
+            const canTrade = dailyTradeCount < dailyTradeLimit && openTrades.length === 0;
 
-    useEffect(() => {
-        if (isBinanceConnected) {
-            fetchAndStoreLiveCandles();
-            priceFetchIntervalRef.current = window.setInterval(fetchAndStoreLiveCandles, PRICE_FETCH_INTERVAL);
-            return () => {
-                if (priceFetchIntervalRef.current) clearInterval(priceFetchIntervalRef.current);
+            let tradeToOpen: { direction: 'LONG' | 'SHORT'; reason: string } | null = null;
+
+            if (canTrade) {
+                if (newHeatScores['15m'].buy >= 100) {
+                    tradeToOpen = { direction: 'LONG', reason: '15m Buy Pressure at 100%' };
+                } else if (newHeatScores['15m'].sell >= 100) {
+                    tradeToOpen = { direction: 'SHORT', reason: '15m Sell Pressure at 100%' };
+                } else if (newHeatScores['30m'].buy >= 100) {
+                    tradeToOpen = { direction: 'LONG', reason: '30m Buy Pressure at 100%' };
+                } else if (newHeatScores['30m'].sell >= 100) {
+                    tradeToOpen = { direction: 'SHORT', reason: '30m Sell Pressure at 100%' };
+                }
+            }
+                
+            const note = `Heat 15m (B/S): ${newHeatScores['15m'].buy}/${newHeatScores['15m'].sell}. Heat 30m (B/S): ${newHeatScores['30m'].buy}/${newHeatScores['30m'].sell}.`;
+            const analysisEntry: AnalysisLogEntry = {
+                id: `analysis-${Date.now()}`,
+                timestamp: new Date(),
+                pair: TRADING_PAIR,
+                price: latestLivePrice,
+                action: tradeToOpen ? 'setup_found' : 'hold',
+                note: tradeToOpen ? `${tradeToOpen.reason}. ${note}`: note,
             };
-        } else {
-            setLivePrices({});
-        }
-    }, [isBinanceConnected, fetchAndStoreLiveCandles]);
-    
-    const handleRunBacktest = useCallback(async () => {
-        if (isBacktestRunningRef.current) return;
+            setAnalysisLog(prev => [analysisEntry, ...prev.slice(0, 199)]);
 
-        setPendingOrders([]);
-        setOpenTrades([]);
-        setClosedTrades([]);
-        setAnalysisLog([]);
-        setBacktestProgress(0);
-        setError(null);
-        setSimulationStatus('backtesting');
-        isBacktestRunningRef.current = true;
-        addLog('Starting historical simulation with "Leviathan" engine...', 'request');
+            if (tradeToOpen) {
+                // Use last 5 minutes of 1s data for SL range
+                const consolidationSlice = liveCandles.slice(0, 300);
+                const high = Math.max(...consolidationSlice.map(c => c.high));
+                const low = Math.min(...consolidationSlice.map(c => c.low));
 
-        try {
-            const currentConfig = configRef.current;
-            const backtestBots: Record<string, LeviathanBot> = {};
-            const portfolios: Record<string, { balance: number }> = {};
-            
-            let backtestClosedTrades: Trade[] = [];
-            let backtestAnalysisLog: AnalysisLogEntry[] = [];
-            
-            const pairs = currentConfig.trading_pairs;
-            let totalCandles = 0;
-            let processedCandles = 0;
-
-            const allPairHistories: { pair: string, history: PriceHistoryLogEntry[] }[] = [];
-
-            for (const pair of pairs) {
-                const history1m = (await getFullPriceHistory(pair, '1m')).sort((a, b) => a.id - b.id);
-                if (history1m.length < 100) {
-                    addLog(`Not enough 1m history for ${pair} (${history1m.length} candles), skipping.`, 'warn');
-                    continue;
-                }
-                allPairHistories.push({ pair, history: history1m });
-                totalCandles += history1m.length;
-                
-                backtestBots[pair] = new LeviathanBot(pair, currentConfig);
-                backtestBots[pair].prepareData(history1m);
-                portfolios[pair] = { balance: currentConfig.total_capital_usd };
-            }
-
-            if (allPairHistories.length === 0) throw new Error("No pairs have sufficient historical data.");
-
-            const mergedTimestamps = [...new Set(allPairHistories.flatMap(p => p.history.map(h => h.id)))].sort();
-            
-            let localOpenTrades: Trade[] = [];
-            let localPendingOrders: PendingOrder[] = [];
-
-            for (const timestamp of mergedTimestamps) {
-                if (!isBacktestRunningRef.current) break;
-
-                for (const { pair, history } of allPairHistories) {
-                    const currentCandle = history.find(c => c.id === timestamp);
-                    if (!currentCandle) continue;
-
-                    const bot = backtestBots[pair];
-                    const portfolio = portfolios[pair];
-                    let openTrade = localOpenTrades.find(t => t.pair === pair) || null;
-                    
-                    // 1. Manage existing positions
-                    if (openTrade) {
-                        const { updatedTrade, pnl, reason, closedUnits } = bot.managePosition(openTrade, currentCandle.close);
-                        if (updatedTrade) {
-                            openTrade = { ...openTrade, ...updatedTrade };
-                            localOpenTrades = localOpenTrades.map(t => t.id === openTrade!.id ? openTrade! : t);
-                        }
-                        if (pnl !== undefined) {
-                            portfolio.balance += pnl;
-                            addLog(`[${pair}] Partial close: ${reason}. PNL: $${pnl.toFixed(2)}`, 'info');
-                        }
-                        if (openTrade.status === 'closed') {
-                            const finalTrade = { ...openTrade, pnl: (openTrade.pnl || 0) + (pnl || 0) };
-                            backtestClosedTrades.push(finalTrade);
-                            localOpenTrades = localOpenTrades.filter(t => t.id !== openTrade!.id);
-                        }
-                    }
-
-                    // 2. Check for triggered pending orders
-                    const pendingOrder = localPendingOrders.find(o => o.pair === pair);
-                    if (pendingOrder && !openTrade) {
-                        let triggered = false;
-                        if (pendingOrder.direction === 'BUY' && currentCandle.high >= pendingOrder.entryPrice) triggered = true;
-                        if (pendingOrder.direction === 'SELL' && currentCandle.low <= pendingOrder.entryPrice) triggered = true;
-                        
-                        if(triggered) {
-                            const sizeUnits = bot.calculateInitialSize(pendingOrder.entryPrice, pendingOrder.stopLoss, portfolio.balance);
-                            if (sizeUnits > 0) {
-                                openTrade = {
-                                    id: `${pair}-${timestamp}`, pair, direction: pendingOrder.direction === 'BUY' ? 'LONG' : 'SHORT',
-                                    entryPrice: pendingOrder.entryPrice, openedAt: new Date(timestamp), status: 'active',
-                                    sizeUnits, initialStopLoss: pendingOrder.stopLoss, stopLoss: pendingOrder.stopLoss,
-                                    tp1Hit: false, tp2Hit: false,
-                                    highWaterMark: pendingOrder.entryPrice, lowWaterMark: pendingOrder.entryPrice,
-                                };
-                                localOpenTrades.push(openTrade);
-                                addLog(`[${pair}] Pending order triggered. Opened ${openTrade.direction} position.`, 'info');
-                            }
-                            localPendingOrders = localPendingOrders.filter(o => o.pair !== pair);
-                        }
-                    }
-
-                    // 3. Check for new setups
-                    if (!openTrade && !pendingOrder) {
-                        const setupResult = bot.checkForSetup(timestamp);
-                        if (setupResult && 'direction' in setupResult) {
-                            localPendingOrders.push({ pair, direction: setupResult.direction, entryPrice: setupResult.entryPrice, stopLoss: setupResult.stopLoss });
-                            backtestAnalysisLog.push({ id: `${pair}-${timestamp}`, timestamp: new Date(timestamp), pair, price: currentCandle.close, action: setupResult.direction === 'BUY' ? 'setup_buy' : 'setup_sell', note: setupResult.note });
-                        } else if(setupResult) {
-                            // Log 'hold' signals periodically to show bot is alive
-                            if (Math.random() < 0.05) {
-                                 backtestAnalysisLog.push({ id: `${pair}-${timestamp}`, timestamp: new Date(timestamp), pair, price: currentCandle.close, action: 'hold', note: setupResult.note });
-                            }
-                        }
-                    }
-                } // End pair loop
-                
-                processedCandles++;
-                if (processedCandles % 100 === 0) {
-                    setOpenTrades([...localOpenTrades]);
-                    setPendingOrders([...localPendingOrders]);
-                    setBacktestProgress((processedCandles / totalCandles) * 100);
-                    await new Promise(res => setTimeout(res, 0));
-                }
-            } // End timestamp loop
-
-            if (isBacktestRunningRef.current) {
-                setAnalysisLog(backtestAnalysisLog.reverse());
-                setClosedTrades(backtestClosedTrades.reverse());
-                setOpenTrades([]);
-                setPendingOrders([]);
-                setSimulationStatus('backtest_complete');
-                setBacktestProgress(100);
-                const finalCapital = Object.values(portfolios).reduce((sum, p) => sum + p.balance, 0);
-                const initialCapital = pairs.length * currentConfig.total_capital_usd;
-                addLog(`Backtest complete. Final Capital: $${finalCapital.toFixed(2)}. Initial: $${initialCapital.toFixed(2)}. Generated ${backtestClosedTrades.length} trades.`, 'info');
+                const newTrade: Trade = {
+                    id: `trade-${Date.now()}`,
+                    pair: TRADING_PAIR,
+                    direction: tradeToOpen.direction,
+                    entryPrice: latestLivePrice,
+                    stopLoss: tradeToOpen.direction === 'LONG' ? low : high,
+                    openedAt: new Date(),
+                    status: 'active',
+                    sizeUnits: 1,
+                    reason: tradeToOpen.reason,
+                };
+                setOpenTrades(prev => [newTrade, ...prev]);
+                botInstanceRef.current.recordTradeExecution();
+                addLog(`New ${tradeToOpen.direction} trade opened based on Heat Tracker signal.`, 'response', newTrade);
             } else {
-                addLog('Backtest stopped.', 'warn');
-                setSimulationStatus('stopped');
+                 addLog(`Analysis complete. ${canTrade ? 'No trade triggered.' : (openTrades.length > 0 ? 'Holding position.' : 'Daily limit reached.')}`, 'info');
             }
-
         } catch (e) {
             const errorMessage = e instanceof Error ? e.message : String(e);
-            setError(`Backtest Error: ${errorMessage}`);
-            addLog(`Backtest Error: ${errorMessage}`, 'error');
-            setSimulationStatus('stopped');
-        } finally {
-            isBacktestRunningRef.current = false;
+            addLog(`Main logic tick failed: ${errorMessage}`, 'error', { error: e });
         }
-    }, [addLog]);
-
+    }, [addLog, openTrades, livePrice, refreshPriceHistoryFromDB, liveCandles]);
+    
     const handleBinanceConnect = useCallback(async (key: string, secret: string) => {
         setIsBinanceConnected(true);
-        addLog('Binance API Connected. Starting live price feed.', 'info');
+        addLog('Binance API Connected. Backfilling high-resolution data for bot...', 'info');
         
         try {
-            await initDBForPairs(configRef.current.trading_pairs);
-
-            for (const pair of configRef.current.trading_pairs) {
-                addLog(`Backfilling historical data for ${pair}... This may take a few minutes.`, 'request');
-                
-                addLog(`[${pair}] Fetching 30 hours of 1-minute k-lines...`, 'info');
-                const klines1m = await fetchHistorical1mKlines(pair, 30);
-                await addPriceHistory(pair, klines1m);
-                addLog(`[${pair}] Stored ${klines1m.length} 1-minute k-lines.`, 'info');
-                
-                addLog(`[${pair}] Fetching 4 hours of 1s klines to create 15s candles...`, 'info');
-                const candles15s = await fetchHistoricalHighResCandles(pair, 4);
-                await addPriceHistory(pair, candles15s);
-                addLog(`[${pair}] Stored ${candles15s.length} 15-second candles.`, 'info');
-
-                const latestTimestamp = await getLatestEntryTimestamp(pair);
-                if (latestTimestamp) {
-                    lastFetchTimestampsRef.current[pair] = latestTimestamp;
-                }
-            }
-
-            addLog('Historical data backfill completed for all pairs.', 'info');
+            await initDBForPairs([TRADING_PAIR]);
+            addLog(`[${TRADING_PAIR}] Fetching 2 hours of 1-minute k-lines for historical export...`, 'info');
+            const klines1m = await fetchHistorical1mKlines(TRADING_PAIR, 2);
+            await addPriceHistory(TRADING_PAIR, klines1m);
+            addLog(`[${TRADING_PAIR}] Stored ${klines1m.length} 1-minute k-lines.`, 'info');
             await refreshPriceHistoryFromDB();
+            
+            addLog(`[${TRADING_PAIR}] Fetching 2 hours of 1-second k-lines for live analysis buffer...`, 'info');
+            const klines1s = await fetchHistorical1sKlines(TRADING_PAIR, 2);
+
+            botInstanceRef.current = new BtcUsdTrader(key, secret);
+            botInstanceRef.current.initializeBuffer(klines1s);
+            addLog(`Bot initialized with ${klines1s.length} 1-second candles.`, 'info');
+
         } catch (e) {
             const error = e instanceof Error ? e.message : String(e);
             addLog(`Failed to backfill historical data: ${error}`, 'error');
@@ -329,39 +184,50 @@ const App: React.FC = () => {
         }
     }, [addLog, refreshPriceHistoryFromDB]);
         
-    const handlePlay = async () => {
-        addLog('Live simulation starting... Initializing bot profiles.', 'info');
-        setPendingOrders([]);
-        setOpenTrades([]);
-        setClosedTrades([]);
-        setAnalysisLog([]);
-        setError(null);
-        setSimulationStatus('running');
-
-        const currentConfig = configRef.current;
-        for (const pair of currentConfig.trading_pairs) {
-            botInstancesRef.current[pair] = new LeviathanBot(pair, currentConfig);
-            const history1m = (await getFullPriceHistory(pair, '1m')).sort((a, b) => a.id - b.id);
-            if (history1m.length > 50) {
-                botInstancesRef.current[pair].prepareData(history1m);
-                addLog(`Bot for ${pair} initialized with ${history1m.length} candles.`, 'info');
-            } else {
-                 addLog(`Not enough history for ${pair} to initialize bot.`, 'warn');
-            }
+    const handlePlay = () => {
+        if (!botInstanceRef.current) {
+            addLog('Cannot start live trading. Bot is not initialized. Connect to Binance first.', 'error');
+            return;
         }
+        addLog(`Live trading analysis started. Ticking every ${TICK_INTERVAL / 1000} seconds.`, 'info');
+        setSimulationStatus('live');
+        setAnalysisLog([]); // Clear previous logs
+        
+        lastTickTsRef.current = null;
+        runMainTick(); 
+        mainIntervalRef.current = window.setInterval(runMainTick, TICK_INTERVAL);
     };
 
     const handleStop = () => {
-        if (isBacktestRunningRef.current) {
-            isBacktestRunningRef.current = false;
-        } else {
-            addLog('Simulation stopped.', 'info');
-            setSimulationStatus('stopped');
-            setPendingOrders([]);
-            setOpenTrades([]);
-        }
+        if (mainIntervalRef.current) clearInterval(mainIntervalRef.current);
+        mainIntervalRef.current = null;
+        
+        addLog('Simulation stopped.', 'info');
+        setSimulationStatus('stopped');
+        setOpenTrades([]);
+        setHeatScores(null);
+        setLastUpdated(null);
+        setLiveCandles([]);
+        setLivePrice(undefined);
     };
-
+    
+    const handleExport = useCallback(async (type: 'terminal' | 'analysis' | 'price_history') => {
+        addLog(`Exporting ${type} to CSV...`, 'request');
+        try {
+            if (type === 'terminal') {
+                exportToCsv('terminal_log.csv', terminalLog);
+            } else if (type === 'analysis') {
+                exportToCsv('analysis_log.csv', analysisLog);
+            } else if (type === 'price_history') {
+                const fullHistory = await getFullPriceHistory(TRADING_PAIR, '1m');
+                exportToCsv('price_history_1m.csv', fullHistory);
+            }
+            addLog(`Export successful.`, 'response');
+        } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            addLog(`Export failed: ${msg}`, 'error');
+        }
+    }, [terminalLog, analysisLog]);
 
     return (
         <div className="min-h-screen bg-gray-900 text-gray-200 flex flex-col">
@@ -370,36 +236,18 @@ const App: React.FC = () => {
                 <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
                     <div className="lg:col-span-3 space-y-8">
                          <ConnectionPanel
-                            isGeminiConnected={isGeminiConnected}
                             isBinanceConnected={isBinanceConnected}
                             simulationStatus={simulationStatus}
-                            onGeminiConnect={(apiKey) => { setGeminiApiKey(apiKey); setIsGeminiConnected(true); addLog('Gemini API Connected.', 'info'); }}
                             onBinanceConnect={handleBinanceConnect}
-                            onGeminiDisconnect={() => { setIsGeminiConnected(false); setGeminiApiKey(''); addLog('Gemini API Disconnected.', 'info');}}
-                            onBinanceDisconnect={() => { setIsBinanceConnected(false); addLog('Binance API Disconnected.', 'info');}}
+                            onBinanceDisconnect={() => { setIsBinanceConnected(false); handleStop(); addLog('Binance API Disconnected.', 'info');}}
                         />
                         <SimulationControl
                             status={simulationStatus}
-                            analysisEngine={analysisEngine}
                             onPlay={handlePlay}
-                            onPause={() => { addLog('Simulation paused.', 'info'); setSimulationStatus('paused'); }}
                             onStop={handleStop}
-                            onAdvance={() => {}}
-                            onManualAnalysis={() => {}}
-                            onEngineChange={setAnalysisEngine}
-                            onRunBacktest={handleRunBacktest}
-                            backtestProgress={backtestProgress}
-                            isDisabled={!isBinanceConnected}
-                            isManualDisabled={true}
+                            isBinanceConnected={isBinanceConnected}
                         />
-                        <LivePrices prices={livePrices} trading_pairs={config.trading_pairs} />
-                        <ControlPanel
-                            initialConfig={config}
-                            onConfigChange={setConfig}
-                            onAnalyze={() => {}}
-                            isLoading={isLoading}
-                            isSimulating={simulationStatus !== 'stopped'}
-                        />
+                        <LivePrices price={livePrice} />
                     </div>
                     <div className="lg:col-span-9 flex flex-col gap-8">
                         {error && (
@@ -408,24 +256,23 @@ const App: React.FC = () => {
                                 <p>{error}</p>
                             </div>
                         )}
-                        <SignalDashboard
-                            pendingOrders={pendingOrders}
-                            isLoading={isLoading && pendingOrders.length === 0}
+                        <HeatTracker
+                            heatScores={heatScores}
+                            dailyTradeCount={botInstanceRef.current?.getDailyTradeCount() || 0}
+                            dailyTradeLimit={botInstanceRef.current?.getDailyTradeLimit() || 4}
+                            lastUpdated={lastUpdated}
                         />
                         <OpenPositions openTrades={openTrades} closedTrades={closedTrades} />
-                        <AnalysisLog logEntries={analysisLog} onExport={() => {}} />
-                        <PriceHistoryLog 
-                            trading_pairs={config.trading_pairs}
-                            logData={displayPriceHistory}
-                            logCounts={priceHistoryCounts}
-                            onExport={() => {}} 
-                            onFetchPrices={() => {}} 
+                        <AnalysisLog logEntries={analysisLog} onExport={() => handleExport('analysis')} />
+                        <LivePriceFeed 
+                            candles={liveCandles}
+                            onExport={() => handleExport('price_history')} 
                         />
                         <BotStrategy />
                     </div>
                 </div>
             </main>
-            <Terminal logs={terminalLog} onExport={() => {}} />
+            <Terminal logs={terminalLog} onExport={() => handleExport('terminal')} />
         </div>
     );
 };

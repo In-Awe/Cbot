@@ -10,8 +10,8 @@ interface AnalysisLogProps {
 }
 
 const getActionColor = (action: string) => {
-    if (action.includes('buy')) return 'text-green-400';
-    if (action.includes('sell')) return 'text-red-400';
+    if (action.includes('found')) return 'text-cyan-400';
+    if (action.includes('filter')) return 'text-yellow-400';
     return 'text-gray-400';
 }
 
@@ -32,7 +32,7 @@ export const AnalysisLog: React.FC<AnalysisLogProps> = ({ logEntries, onExport }
             
             {logEntries.length === 0 ? (
                 <div className="text-center py-10">
-                    <p className="text-gray-400">Run a simulation or backtest to see the bot's decision log here.</p>
+                    <p className="text-gray-400">Run a simulation or live analysis to see the bot's decision log here.</p>
                 </div>
             ) : (
                 <div className="overflow-x-auto max-h-96 overflow-y-auto">
