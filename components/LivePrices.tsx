@@ -39,7 +39,7 @@ const PriceRow: React.FC<{ pair: string, priceData: PriceHistoryLogEntry | undef
         <div className="flex justify-between items-center py-2">
             <span className="font-medium text-gray-300">{pair}</span>
             <span ref={priceRef} className="font-mono text-2xl transition-colors duration-300">
-                {price !== undefined ? `$${price.toFixed(2)}` : <span className="text-gray-500">...</span>}
+                {price !== undefined ? `$${price.toFixed(4)}` : <span className="text-gray-500">...</span>}
             </span>
         </div>
     );
@@ -48,8 +48,8 @@ const PriceRow: React.FC<{ pair: string, priceData: PriceHistoryLogEntry | undef
 export const LivePrices: React.FC<LivePricesProps> = ({ price }) => {
     return (
         <Card>
-            <h3 className="text-lg font-semibold text-cyan-400 mb-4">Live BTC/USDT Price</h3>
-             <PriceRow pair="BTC/USDT" priceData={price} />
+            <h3 className="text-lg font-semibold text-cyan-400 mb-4">Live XRP/USDT Price</h3>
+             <PriceRow pair="XRP/USDT" priceData={price} />
         </Card>
     );
 };

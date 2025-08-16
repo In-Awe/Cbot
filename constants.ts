@@ -1,104 +1,73 @@
 
-export const COMMON_TRADING_PAIRS = ["BTC/USDT"];
+export const COMMON_TRADING_PAIRS = ["XRP/USDT"];
 
 export const BOT_STRATEGY_SCRIPT = `
 /*
- * BTC/USDT Trader Bot
- * Strategy: 'Leviathan Apex' - Triple Confirmation
- * Version: 1.0 (Live Trading)
+ * XRP/USDT 1-Second Trader Bot
+ * Strategy: 'Adaptive Impulse Catcher'
+ * Version: 1.2 (XRP Optimized with Volatility Adaptation)
  *
  * DISCLAIMER: This script is for educational and illustrative purposes only.
- * Live trading involves significant risk. You are solely responsible for any
- * financial losses.
+ * High-frequency trading involves significant risk. You are solely responsible 
+ * for any financial losses.
  *
  * --- STRATEGY OVERVIEW ---
- * This bot uses a triple confirmation system to identify high-probability
- * breakout trades for BTC/USDT.
+ * This version adapts to market volatility to improve efficiency. It aims to 
+ * trade more in stable conditions and become more selective during high 
+ * volatility, addressing the issue of missed trades in calmer periods.
  *
- * 1.  MACRO TREND: A 60-minute Exponential Moving Average (EMA) establishes
- *     the dominant market direction (UP or DOWN). Trades are only taken
- *     in alignment with this trend.
+ * 1.  VOLATILITY ANALYSIS: The bot calculates price volatility (standard deviation)
+ *     over the last 5 minutes (300 seconds).
  *
- * 2.  VOLATILITY SQUEEZE: The bot waits for periods of low volatility,
- *     identified by a combination of Bollinger Band Width (BBW) and the
- *     Average True Range (ATR). A "squeeze" indicates potential for an
- *     explosive price movement.
+ * 2.  DYNAMIC THRESHOLDS: The 'PRICE_CHANGE_THRESHOLD' is no longer fixed. It
+ *     starts at a lower base value (0.09%) and increases automatically as market
+ *     volatility rises. This allows the bot to catch smaller impulses in quiet
+ *     markets while avoiding false signals during chaotic periods.
  *
- * 3.  CONVICTION SCORE: Each potential setup is scored based on how tight
- *     the squeeze is (lower BBW + lower ATR = better score). The bot
- *     prioritizes the setups with the best scores.
+ * 3.  VOLUME & CONFIDENCE: The volume spike factor and confidence score
+ *     thresholds have been slightly lowered to increase sensitivity, balanced by
+ *     the new dynamic price threshold.
  *
  * --- EXECUTION LOGIC ---
- * - The bot analyzes the market every minute.
- * - It limits itself to the top 4 highest-conviction trades per day.
- * - Entry is a breakout of the recent consolidation range (high/low).
- * - Risk is managed by calculating position size based on a fixed
- *   percentage of a conceptual daily capital.
+ * - The bot analyzes market conditions and adjusts its own parameters every tick.
+ * - A trade is triggered if an impulse's confidence score exceeds 72 and it
+ *   passes the dynamically-adjusted price and volume checks.
  */
 
-// --- BOT CONFIGURATION ('Leviathan Apex' Profile) ---
+// --- BOT CONFIGURATION ('Adaptive Impulse Catcher' for XRP) ---
 const TraderSettings = {
-    // Trading Pair & Timeframes
-    SYMBOL: 'BTCUSDT',
-    MACRO_TREND_TF: "60T",
-    EXECUTION_TF: "5T",
+    // Trading Pair & Timeframe
+    SYMBOL: 'XRPUSDT',
+    EXECUTION_TF: "1s",
 
-    // Core Indicator Parameters
-    MACRO_EMA_PERIOD: 50,
-    BBANDS_PERIOD: 20,
-    BBANDS_STD_DEV: 2.0,
-    ATR_PERIOD: 14,
+    // Core Adaptive Impulse Parameters
+    BASE_PRICE_CHANGE_THRESHOLD: 0.09, // % (Lower base, scales with volatility)
+    VOLUME_SPIKE_FACTOR: 2.2,          // multiplier (Slightly reduced for more signals)
+    CONFIDENCE_THRESHOLD: 72,          // min score (Slightly reduced for higher frequency)
+    
+    // Time Windows
+    IMPULSE_WINDOW_S: 15,              // seconds
+    AVERAGE_VOLUME_WINDOW_S: 60,       // seconds
+    VOLATILITY_WINDOW_S: 300,          // 5-minute window for volatility calc
 
-    // Trade Execution & Filtering
-    ATR_VOLATILITY_THRESHOLD: 0.0008, // Min ATR value (% of price)
-    NUM_TRADES_PER_DAY: 4,
-
-    // Capital & Risk Management
-    TOTAL_DAILY_CAPITAL: 1000.00,
-    TRADE_RISK_PERCENT: 0.05,
+    // Dynamic Behavior Tuning
+    VOLATILITY_MULTIPLIER: 2.5,        // Controls sensitivity to volatility
 };
 
-class BtcUsdTrader {
+class XrpUsdAdaptiveTrader {
     constructor(apiKey, apiSecret) {
         // ... API client initialization ...
         this.settings = TraderSettings;
-        this.capitalPerTrade = this.settings.TOTAL_DAILY_CAPITAL / this.settings.NUM_TRADES_PER_DAY;
-        this.dataBuffer = []; // stores last 120 1-min candles
-        this.tradesExecutedToday = 0;
-        this.lastResetDay = -1;
     }
 
     // --- Core Methods ---
-    fetchAndPrepareData() {
-        // 1. Fetch 1-min klines from Binance
-        // 2. Resample to 60T and 5T
-        // 3. Calculate 60T EMA
-        // 4. Calculate 5T Bollinger Bands & BBW
-        // 5. Calculate 5T ATR and normalized ATR
-        // Returns prepared dataframes.
-    }
-
-    findAndExecuteTrades(preparedData) {
-        // 1. Check and reset daily trade counter.
-        // 2. Scan recent 5-min candles for setups.
-        // 3. For each candle, evaluate for a valid setup.
-        // 4. Sort valid setups by conviction score.
-        // 5. Execute the top N trades based on daily limit.
-    }
-
-    _evaluateSetup(candle, execDf, macroDf) {
-        // Filter 1: Volatility Check (ATR vs threshold)
-        // Calculate Conviction Score (BBW + normalized ATR)
-        // Filter 2: Trend Alignment (vs. 60T EMA)
-        // Determine entry/stop levels from consolidation range.
-        // Return setup object or null.
-    }
-
-    _executeTrade(setup) {
-        // Calculate position size based on risk parameters.
-        // In a live environment, this would place orders via API.
-        // For this dashboard, it just logs the intended trade.
-        console.log("EXECUTING TRADE:", setup);
+    runAnalysis() {
+        // 1. Calculate volatility over the last 300s.
+        // 2. Calculate the dynamic price_change_threshold based on volatility.
+        // 3. Calculate simple moving average of volume over last 60s.
+        // 4. Look at the last 15s of price and volume data.
+        // 5. Check for impulse against the *dynamic* price threshold.
+        // 6. Return buy/sell heat based on confidence score.
     }
 }
 `;

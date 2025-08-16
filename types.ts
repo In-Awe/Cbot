@@ -110,11 +110,15 @@ export interface PredictionAccuracyRecord {
 
 // Represents the bot's conviction scores for different time horizons.
 export interface HeatScores {
-    '15m': {
+    '1s'?: {
         buy: number;
         sell: number;
     };
-    '30m': {
+    '15m'?: {
+        buy: number;
+        sell: number;
+    };
+    '30m'?: {
         buy: number;
         sell: number;
     };

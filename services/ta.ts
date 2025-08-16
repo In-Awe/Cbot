@@ -1,7 +1,22 @@
-
 // A collection of basic Technical Analysis helper functions.
 
 import type { PriceHistoryLogEntry } from '../types';
+
+/**
+ * Calculates the Standard Deviation of a series of numbers.
+ * @param arr - Array of numbers.
+ * @returns The standard deviation.
+ */
+export const calculateStdDev = (arr: number[]): number => {
+    // Filter out non-finite numbers to prevent NaN results.
+    const finiteArr = arr.filter(n => Number.isFinite(n));
+    const n = finiteArr.length;
+    if (n === 0) return 0;
+
+    const mean = finiteArr.reduce((a, b) => a + b) / n;
+    const variance = finiteArr.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / n;
+    return Math.sqrt(variance);
+};
 
 /**
  * Calculates Wilder's Moving Average, used in indicators like RSI and ADX.
@@ -73,85 +88,30 @@ export const calculateEMA = (prices: number[], period: number): number[] => {
 };
 
 /**
- * Calculates Bollinger Bands (Middle, Upper, Lower, and Width) for a given period.
+ * Calculates Bollinger Bands (Middle, Upper, Lower) for a given period.
  * @param prices - Array of numbers (e.g., closing prices).
  * @param period - The lookback period for the bands.
- * @param stdDev - The number of standard deviations for the upper/lower bands.
- * @returns An object containing arrays for the middle, upper, lower bands, and bbw.
+ * @param stdDevMultiplier - The number of standard deviations for the upper/lower bands.
+ * @returns An object containing arrays for the middle, upper, and lower bands.
  */
-export const calculateBollingerBands = (prices: number[], period: number, stdDev: number) => {
-    if (prices.length < period) return { middle: [], upper: [], lower: [], bbw: [] };
-    
+export const calculateBollingerBands = (prices: number[], period: number, stdDevMultiplier: number): { middle: number[], upper: number[], lower: number[] } => {
+    if (prices.length < period) {
+        return { middle: [], upper: [], lower: [] };
+    }
+
     const middle: number[] = [];
     const upper: number[] = [];
     const lower: number[] = [];
-    const bbw: number[] = [];
 
     for (let i = period - 1; i < prices.length; i++) {
         const slice = prices.slice(i - period + 1, i + 1);
         const sma = slice.reduce((a, b) => a + b, 0) / period;
-        const variance = slice.reduce((a, b) => a + Math.pow(b - sma, 2), 0) / period;
-        const std = Math.sqrt(variance);
-        
-        const upperBand = sma + (stdDev * std);
-        const lowerBand = sma - (stdDev * std);
-        
+        const stdDev = calculateStdDev(slice);
+
         middle.push(sma);
-        upper.push(upperBand);
-        lower.push(lowerBand);
-        bbw.push(sma > 1e-12 ? (upperBand - lowerBand) / sma : 0);
+        upper.push(sma + (stdDev * stdDevMultiplier));
+        lower.push(sma - (stdDev * stdDevMultiplier));
     }
 
-    return { middle, upper, lower, bbw };
-};
-
-/**
- * Calculates the Relative Strength Index (RSI).
- * @param prices - Array of numbers (e.g., closing prices).
- * @param period - The lookback period for the RSI.
- * @returns An array of RSI values, not padded.
- */
-export const calculateRSI = (prices: number[], period: number): number[] => {
-    if (prices.length <= period) return [];
-
-    const rsi: number[] = [];
-    const changes = prices.slice(1).map((price, i) => price - prices[i]);
-    
-    let gains = 0;
-    let losses = 0;
-
-    // Initial average gain/loss
-    for (let i = 0; i < period; i++) {
-        if (changes[i] > 0) {
-            gains += changes[i];
-        } else {
-            losses -= changes[i];
-        }
-    }
-
-    let avgGain = gains / period;
-    let avgLoss = losses / period;
-
-    for (let i = period; i < changes.length + 1; i++) {
-        const rs = avgLoss === 0 ? 100 : avgGain / avgLoss;
-        const currentRsi = 100 - (100 / (1 + rs));
-        rsi.push(currentRsi);
-
-        if (i < changes.length) {
-            const currentChange = changes[i];
-            let currentGain = 0;
-            let currentLoss = 0;
-
-            if (currentChange > 0) {
-                currentGain = currentChange;
-            } else {
-                currentLoss = -currentChange;
-            }
-
-            avgGain = (avgGain * (period - 1) + currentGain) / period;
-            avgLoss = (avgLoss * (period - 1) + currentLoss) / period;
-        }
-    }
-    
-    return rsi;
+    return { middle, upper, lower };
 };

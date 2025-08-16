@@ -1,3 +1,4 @@
+
 import React from 'react';
 import type { HeatScores } from '../types';
 import { Card } from './ui/Card';
@@ -45,11 +46,6 @@ const HeatTrackerSkeleton: React.FC = () => (
             <div className="h-5 bg-gray-700 rounded-full w-full"></div>
             <div className="h-5 bg-gray-700 rounded-full w-full"></div>
         </div>
-         <div className="space-y-3">
-            <div className="h-5 bg-gray-700 rounded w-1/3 mb-4"></div>
-            <div className="h-5 bg-gray-700 rounded-full w-full"></div>
-            <div className="h-5 bg-gray-700 rounded-full w-full"></div>
-        </div>
     </div>
 );
 
@@ -58,7 +54,7 @@ export const HeatTracker: React.FC<HeatTrackerProps> = ({ heatScores, dailyTrade
         <Card>
             <div className="flex flex-col sm:flex-row justify-between sm:items-center mb-6 gap-2">
                 <div>
-                    <h2 className="text-2xl font-bold text-gray-100">BTC/USDT Heat Tracker</h2>
+                    <h2 className="text-2xl font-bold text-gray-100">XRP/USDT Impulse Tracker</h2>
                      <p className="text-xs text-gray-400 mt-1">
                         Last updated: {lastUpdated ? lastUpdated.toLocaleTimeString() : '...'}
                     </p>
@@ -68,22 +64,15 @@ export const HeatTracker: React.FC<HeatTrackerProps> = ({ heatScores, dailyTrade
                 </div>
             </div>
 
-            {!heatScores ? (
+            {!heatScores || !heatScores['1s'] ? (
                 <HeatTrackerSkeleton />
             ) : (
                 <div className="space-y-8">
                     <div>
-                        <h3 className="text-lg font-semibold text-gray-200 mb-3 border-b border-gray-700/50 pb-2">15 Minute Outlook</h3>
+                        <h3 className="text-lg font-semibold text-gray-200 mb-3 border-b border-gray-700/50 pb-2">1 Second Impulse</h3>
                         <div className="space-y-4">
-                           <HeatBar label="Buy Pressure" percentage={heatScores['15m'].buy} direction="buy" />
-                           <HeatBar label="Sell Pressure" percentage={heatScores['15m'].sell} direction="sell" />
-                        </div>
-                    </div>
-                     <div>
-                        <h3 className="text-lg font-semibold text-gray-200 mb-3 border-b border-gray-700/50 pb-2">30 Minute Outlook</h3>
-                        <div className="space-y-4">
-                            <HeatBar label="Buy Pressure" percentage={heatScores['30m'].buy} direction="buy" />
-                           <HeatBar label="Sell Pressure" percentage={heatScores['30m'].sell} direction="sell" />
+                           <HeatBar label="Buy Impulse" percentage={heatScores['1s'].buy} direction="buy" />
+                           <HeatBar label="Sell Impulse" percentage={heatScores['1s'].sell} direction="sell" />
                         </div>
                     </div>
                 </div>

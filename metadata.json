@@ -1,5 +1,5 @@
 {
-  "name": "Gemini Trading Strategy Dashboard",
-  "description": "A web-based control panel and dashboard to configure and visualize trading signals from an advanced analysis strategy, powered by the Gemini API to simulate signal generation.",
+  "name": "XRP Impulse Trader",
+  "description": "A high-frequency trading dashboard that visualizes and acts on 1-second impulse signals for XRP/USDT, based on an optimized impulse catching strategy.",
   "requestFramePermissions": []
 }
