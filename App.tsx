@@ -39,6 +39,7 @@ const App: React.FC = () => {
     const tickTimeoutRef = useRef<number | null>(null);
     const isTickingRef = useRef(false);
     const openTradesRef = useRef<Trade[]>([]);
+    const closedTradesRef = useRef<Trade[]>([]);
 
     const TRADING_PAIR = 'XRP/USDT';
     const TICK_INTERVAL = 2000; // 2 seconds
@@ -67,34 +68,75 @@ const App: React.FC = () => {
         }
 
         try {
+            // 1. FETCH LATEST DATA
             const ROLLING_WINDOW_SECONDS = 360; // 6 minutes
             const startTime = Date.now() - ROLLING_WINDOW_SECONDS * 1000;
             const recentKlines = await fetchKlinesSince(TRADING_PAIR, '1s', startTime);
 
-            if (recentKlines.length > 0) {
-                botInstanceRef.current.initializeBuffer(recentKlines);
+            if (recentKlines.length === 0) {
+                addLog('No recent 1s kline data received from API. Trade management will use last known price.', 'warn');
             } else {
-                addLog('No recent 1s kline data received from API.', 'warn');
+                botInstanceRef.current.initializeBuffer(recentKlines);
             }
 
-            const { heatScores: newHeatScores } = botInstanceRef.current.runAnalysis();
-
-            // Manage trades
-            const latestLivePriceEntry = recentKlines.length > 0 ? recentKlines[recentKlines.length - 1] : null;
+            const latestLivePriceEntry = recentKlines.length > 0 ? recentKlines[recentKlines.length - 1] : livePrice;
             const latestLivePrice = latestLivePriceEntry?.close ?? 0;
-                
+
+            // 2. MANAGE OPEN TRADES
+            if (openTradesRef.current.length > 0 && latestLivePrice > 0) {
+                const tradesToClose: Trade[] = [];
+                const stillOpenTrades: Trade[] = [];
+                const tradeExitSeconds = botInstanceRef.current.getTradeExitSeconds();
+
+                for (const trade of openTradesRef.current) {
+                    let closeReason: string | null = null;
+                    const tradeAgeSeconds = (Date.now() - new Date(trade.openedAt).getTime()) / 1000;
+
+                    if (trade.direction === 'LONG' && latestLivePrice <= trade.stopLoss) {
+                        closeReason = `Stop-loss triggered at $${trade.stopLoss.toFixed(4)}.`;
+                    } else if (trade.direction === 'SHORT' && latestLivePrice >= trade.stopLoss) {
+                        closeReason = `Stop-loss triggered at $${trade.stopLoss.toFixed(4)}.`;
+                    } else if (tradeAgeSeconds > tradeExitSeconds) {
+                        closeReason = `Time-based exit after ${tradeExitSeconds}s.`;
+                    }
+
+                    if (closeReason) {
+                        const pnl = (trade.direction === 'LONG' ? latestLivePrice - trade.entryPrice : trade.entryPrice - latestLivePrice) * trade.sizeUnits;
+                        const closedTrade: Trade = {
+                            ...trade,
+                            status: 'closed',
+                            exitPrice: latestLivePrice,
+                            closedAt: new Date(),
+                            pnl,
+                            reason: `${trade.reason} | Exit: ${closeReason}`
+                        };
+                        tradesToClose.push(closedTrade);
+                        addLog(`Closing ${trade.direction} trade. ${closeReason} PNL: $${pnl.toFixed(2)}`, pnl >= 0 ? 'response' : 'error', closedTrade);
+                    } else {
+                        stillOpenTrades.push(trade);
+                    }
+                }
+
+                if (tradesToClose.length > 0) {
+                    openTradesRef.current = stillOpenTrades;
+                    closedTradesRef.current = [...tradesToClose, ...closedTradesRef.current];
+                }
+            }
+
+            // 3. RUN ANALYSIS FOR NEW TRADES
+            const { heatScores: newHeatScores } = botInstanceRef.current.runAnalysis();
             const dailyTradeLimit = botInstanceRef.current.getDailyTradeLimit();
             const dailyTradeCount = botInstanceRef.current.getDailyTradeCount();
             const canTrade = dailyTradeCount < dailyTradeLimit && openTradesRef.current.length === 0;
 
-            let tradeToOpen: { direction: 'LONG' | 'SHORT'; reason: string } | null = null;
-            const CONFIDENCE_THRESHOLD = botInstanceRef.current.getConfidenceThreshold();
-
+            let tradeToOpen: { direction: 'LONG' | 'SHORT'; reason: string, confidence: number } | null = null;
+            
             if (canTrade && newHeatScores['1s']) {
+                const CONFIDENCE_THRESHOLD = botInstanceRef.current.getConfidenceThreshold();
                 if (newHeatScores['1s'].buy >= CONFIDENCE_THRESHOLD) {
-                    tradeToOpen = { direction: 'LONG', reason: `1s Buy Impulse at ${newHeatScores['1s'].buy}% confidence` };
+                    tradeToOpen = { direction: 'LONG', reason: `1s Buy Impulse`, confidence: newHeatScores['1s'].buy };
                 } else if (newHeatScores['1s'].sell >= CONFIDENCE_THRESHOLD) {
-                    tradeToOpen = { direction: 'SHORT', reason: `1s Sell Impulse at ${newHeatScores['1s'].sell}% confidence` };
+                    tradeToOpen = { direction: 'SHORT', reason: `1s Sell Impulse`, confidence: newHeatScores['1s'].sell };
                 }
             }
                     
@@ -109,7 +151,7 @@ const App: React.FC = () => {
                 pair: TRADING_PAIR,
                 price: latestLivePrice,
                 action: tradeToOpen ? 'setup_found' : 'hold',
-                note: tradeToOpen ? `${tradeToOpen.reason}. ${note}`: note,
+                note: tradeToOpen ? `${tradeToOpen.reason} @ ${tradeToOpen.confidence}% confidence. ${note}`: note,
             };
             
             if (tradeToOpen) {
@@ -127,7 +169,7 @@ const App: React.FC = () => {
                         openedAt: new Date(),
                         status: 'active',
                         sizeUnits: 1,
-                        reason: tradeToOpen.reason,
+                        reason: `${tradeToOpen.reason} @ ${tradeToOpen.confidence}%`,
                     };
                     openTradesRef.current = [newTrade, ...openTradesRef.current];
                     botInstanceRef.current.recordTradeExecution();
@@ -136,20 +178,23 @@ const App: React.FC = () => {
                 }
             }
 
-            // Update state for UI
+            // 4. UPDATE UI STATE
+            if (recentKlines.length > 0) {
+                 setLiveCandles(recentKlines.slice().reverse());
+                 setLivePrice(latestLivePriceEntry);
+            }
             setHeatScores(newHeatScores);
             setLastUpdated(new Date());
-            setLiveCandles(recentKlines.slice().reverse());
-            setLivePrice(latestLivePriceEntry);
             setAnalysisLog(prev => [analysisEntry, ...prev.slice(0, 199)]);
             setDailyTradeCount(botInstanceRef.current.getDailyTradeCount());
-            setOpenTrades(openTradesRef.current);
+            setOpenTrades([...openTradesRef.current]);
+            setClosedTrades([...closedTradesRef.current]);
 
         } catch (e) {
             const errorMessage = e instanceof Error ? e.message : String(e);
-            addLog(`Tick failed: ${errorMessage}`, 'error', e instanceof Error ? { name: e.name, message: e.message, stack: e.stack } : { error: e });
+            addLog(`Tick failed: ${errorMessage}. The Binance API proxy may be unreliable.`, 'error', e instanceof Error ? { name: e.name, message: e.message, stack: e.stack } : { error: e });
         }
-    }, [addLog]);
+    }, [addLog, livePrice]);
 
     const tickLoop = useCallback(async () => {
         if (!isTickingRef.current) return;
@@ -225,7 +270,9 @@ const App: React.FC = () => {
         }
         setSimulationStatus('stopped');
         setOpenTrades([]);
-        openTradesRef.current = []; // Reset ref as well
+        openTradesRef.current = [];
+        setClosedTrades([]);
+        closedTradesRef.current = [];
         setHeatScores(null);
         setLastUpdated(null);
         setLiveCandles([]);

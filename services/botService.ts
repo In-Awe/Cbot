@@ -20,6 +20,9 @@ const TraderSettings = {
     // Dynamic Behavior Tuning
     VOLATILITY_MULTIPLIER: 2.5,        // Increase sensitivity to volatility
 
+    // Trade Management
+    TRADE_EXIT_SECONDS: 60,            // Exit trade after this many seconds if SL isn't hit
+
     // Bot Internals
     NUM_TRADES_PER_DAY: 100,
     MAX_1S_BUFFER_SIZE: 14400,    // 4 hours of 1-second data
@@ -46,6 +49,7 @@ export class XrpUsdTrader {
     public getConfidenceThreshold = () => this.settings.CONFIDENCE_THRESHOLD;
     public getLastDynamicPriceThreshold = () => this.lastDynamicPriceThreshold;
     public getRecentCandles = (count: number) => this.dataBuffer1s.slice(-count);
+    public getTradeExitSeconds = () => this.settings.TRADE_EXIT_SECONDS;
 
     public initializeBuffer(candles1s: PriceHistoryLogEntry[]): void {
         this.dataBuffer1s = candles1s.sort((a, b) => a.id - b.id);
