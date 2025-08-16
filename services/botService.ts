@@ -46,6 +46,7 @@ export class XrpUsdTrader {
     public getDailyTradeLimit = () => this.settings.NUM_TRADES_PER_DAY;
     public getConfidenceThreshold = () => this.settings.CONFIDENCE_THRESHOLD;
     public getLastDynamicPriceThreshold = () => this.lastDynamicPriceThreshold;
+    public getRecentCandles = (count: number) => this.dataBuffer1s.slice(-count);
 
     public initializeBuffer(candles1s: PriceHistoryLogEntry[]): void {
         this.dataBuffer1s = candles1s.sort((a, b) => a.id - b.id);

@@ -1,4 +1,3 @@
-
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { Header } from './components/Header';
 import { HeatTracker } from './components/HeatTracker';
@@ -33,9 +32,13 @@ const App: React.FC = () => {
     const [terminalLog, setTerminalLog] = useState<TerminalLogEntry[]>([]);
     const [isBinanceConnected, setIsBinanceConnected] = useState(false);
 
-    const mainIntervalRef = useRef<number | null>(null);
+    const [dailyTradeCount, setDailyTradeCount] = useState(0);
+    const [dailyTradeLimit, setDailyTradeLimit] = useState(100);
+
     const botInstanceRef = useRef<XrpUsdTrader | null>(null);
-    
+    const intervalRef = useRef<number | null>(null);
+    const openTradesRef = useRef<Trade[]>([]);
+
     const TRADING_PAIR = 'XRP/USDT';
     const TICK_INTERVAL = 2000; // 2 seconds
 
@@ -54,16 +57,8 @@ const App: React.FC = () => {
         const counts = await getHistoryCounts([TRADING_PAIR]);
         setPriceHistoryCounts(counts);
     }, []);
-
-    useEffect(() => {
-        const initialLoad = async () => {
-            addLog('App initialized for XRP/USDT trading.', 'info');
-            await initDBForPairs([TRADING_PAIR]);
-            await refreshPriceHistoryFromDB();
-        };
-        initialLoad();
-    }, [addLog, refreshPriceHistoryFromDB]);
     
+    // Main analysis loop
     const runMainTick = useCallback(async () => {
         if (!botInstanceRef.current) {
             addLog('Bot not initialized for analysis.', 'error');
@@ -71,40 +66,28 @@ const App: React.FC = () => {
         }
 
         try {
-            // 1. Fetch a rolling window of recent 1s data. This is more robust than fetching
-            // only new candles, ensuring the bot always has a full context for analysis.
-            const ROLLING_WINDOW_SECONDS = 360; // 6 minutes, safely above the 5-min volatility window
+            const ROLLING_WINDOW_SECONDS = 360; // 6 minutes
             const startTime = Date.now() - ROLLING_WINDOW_SECONDS * 1000;
             const recentKlines = await fetchKlinesSince(TRADING_PAIR, '1s', startTime);
 
             if (recentKlines.length > 0) {
-                // Update UI state with the latest candles, newest first.
-                setLiveCandles(recentKlines.slice().reverse());
-                setLivePrice(recentKlines[recentKlines.length - 1]);
-                
-                // The bot's update method is smart enough to handle overlapping data and only add unique candles.
-                botInstanceRef.current.updateWithNewCandles(recentKlines);
+                botInstanceRef.current.initializeBuffer(recentKlines);
+            } else {
+                addLog('No recent 1s kline data received from API.', 'warn');
             }
 
-
-            // 2. Run Bot Analysis
-            addLog('Running bot analysis tick...', 'request');
             const { heatScores: newHeatScores } = botInstanceRef.current.runAnalysis();
-            
-            // 3. Update UI state
-            setHeatScores(newHeatScores);
-            setLastUpdated(new Date());
 
-            // 4. Log analysis and check for trades
-            const latestLivePrice = recentKlines.length > 0 ? recentKlines[recentKlines.length - 1].close : livePrice?.close ?? 0;
-            
-            const bot = botInstanceRef.current;
-            const dailyTradeLimit = bot.getDailyTradeLimit();
-            const dailyTradeCount = bot.getDailyTradeCount();
-            const canTrade = dailyTradeCount < dailyTradeLimit && openTrades.length === 0;
+            // Manage trades
+            const latestLivePriceEntry = recentKlines.length > 0 ? recentKlines[recentKlines.length - 1] : null;
+            const latestLivePrice = latestLivePriceEntry?.close ?? 0;
+                
+            const dailyTradeLimit = botInstanceRef.current.getDailyTradeLimit();
+            const dailyTradeCount = botInstanceRef.current.getDailyTradeCount();
+            const canTrade = dailyTradeCount < dailyTradeLimit && openTradesRef.current.length === 0;
 
             let tradeToOpen: { direction: 'LONG' | 'SHORT'; reason: string } | null = null;
-            const CONFIDENCE_THRESHOLD = bot.getConfidenceThreshold();
+            const CONFIDENCE_THRESHOLD = botInstanceRef.current.getConfidenceThreshold();
 
             if (canTrade && newHeatScores['1s']) {
                 if (newHeatScores['1s'].buy >= CONFIDENCE_THRESHOLD) {
@@ -113,8 +96,8 @@ const App: React.FC = () => {
                     tradeToOpen = { direction: 'SHORT', reason: `1s Sell Impulse at ${newHeatScores['1s'].sell}% confidence` };
                 }
             }
-                
-            const dynamicThreshold = bot.getLastDynamicPriceThreshold();
+                    
+            const dynamicThreshold = botInstanceRef.current.getLastDynamicPriceThreshold();
             const note = newHeatScores['1s']
                 ? `Impulse 1s (Buy/Sell): ${newHeatScores['1s'].buy}/${newHeatScores['1s'].sell}. Dyn. Thresh: ${dynamicThreshold.toFixed(4)}%`
                 : 'Waiting for impulse signals.';
@@ -127,36 +110,62 @@ const App: React.FC = () => {
                 action: tradeToOpen ? 'setup_found' : 'hold',
                 note: tradeToOpen ? `${tradeToOpen.reason}. ${note}`: note,
             };
-            setAnalysisLog(prev => [analysisEntry, ...prev.slice(0, 199)]);
-
+            
             if (tradeToOpen) {
-                // Use last 5 minutes of 1s data for SL range
-                const consolidationSlice = liveCandles.slice(0, 300);
-                const high = Math.max(...consolidationSlice.map(c => c.high));
-                const low = Math.min(...consolidationSlice.map(c => c.low));
+                const consolidationSlice = botInstanceRef.current.getRecentCandles(300);
+                if (consolidationSlice.length > 0) {
+                     const high = Math.max(...consolidationSlice.map(c => c.high));
+                     const low = Math.min(...consolidationSlice.map(c => c.low));
 
-                const newTrade: Trade = {
-                    id: `trade-${Date.now()}`,
-                    pair: TRADING_PAIR,
-                    direction: tradeToOpen.direction,
-                    entryPrice: latestLivePrice,
-                    stopLoss: tradeToOpen.direction === 'LONG' ? low : high,
-                    openedAt: new Date(),
-                    status: 'active',
-                    sizeUnits: 1,
-                    reason: tradeToOpen.reason,
-                };
-                setOpenTrades(prev => [newTrade, ...prev]);
-                botInstanceRef.current.recordTradeExecution();
-                addLog(`New ${tradeToOpen.direction} trade opened based on Impulse Tracker signal.`, 'response', newTrade);
-            } else {
-                 addLog(`Analysis complete. ${canTrade ? 'No trade triggered.' : (openTrades.length > 0 ? 'Holding position.' : 'Daily limit reached.')}`, 'info');
+                    const newTrade: Trade = {
+                        id: `trade-${Date.now()}`,
+                        pair: TRADING_PAIR,
+                        direction: tradeToOpen.direction,
+                        entryPrice: latestLivePrice,
+                        stopLoss: tradeToOpen.direction === 'LONG' ? low : high,
+                        openedAt: new Date(),
+                        status: 'active',
+                        sizeUnits: 1,
+                        reason: tradeToOpen.reason,
+                    };
+                    openTradesRef.current = [newTrade, ...openTradesRef.current];
+                    botInstanceRef.current.recordTradeExecution();
+                    
+                    addLog(`New ${newTrade.direction} trade opened based on Impulse Tracker signal.`, 'response', newTrade);
+                }
             }
+
+            // Update state for UI
+            setHeatScores(newHeatScores);
+            setLastUpdated(new Date());
+            setLiveCandles(recentKlines.slice().reverse());
+            setLivePrice(latestLivePriceEntry);
+            setAnalysisLog(prev => [analysisEntry, ...prev.slice(0, 199)]);
+            setDailyTradeCount(botInstanceRef.current.getDailyTradeCount());
+            setOpenTrades(openTradesRef.current);
+
         } catch (e) {
             const errorMessage = e instanceof Error ? e.message : String(e);
-            addLog(`Main logic tick failed: ${errorMessage}`, 'error', { error: e });
+            addLog(`Tick failed: ${errorMessage}`, 'error', e instanceof Error ? { name: e.name, message: e.message, stack: e.stack } : { error: e });
         }
-    }, [addLog, openTrades, livePrice, liveCandles]);
+    }, [addLog]);
+
+
+    useEffect(() => {
+        const initialLoad = async () => {
+            addLog('App initialized for XRP/USDT trading.', 'info');
+            await initDBForPairs([TRADING_PAIR]);
+            await refreshPriceHistoryFromDB();
+        };
+        initialLoad();
+        
+        // Cleanup interval on component unmount
+        return () => {
+            if (intervalRef.current) {
+                clearInterval(intervalRef.current);
+            }
+        };
+    }, [addLog, refreshPriceHistoryFromDB]);
     
     const handleBinanceConnect = useCallback(async (key: string, secret: string) => {
         setIsBinanceConnected(true);
@@ -173,9 +182,11 @@ const App: React.FC = () => {
             addLog(`[${TRADING_PAIR}] Fetching 2 hours of 1-second k-lines for live analysis buffer...`, 'info');
             const klines1s = await fetchHistorical1sKlines(TRADING_PAIR, 2);
 
-            botInstanceRef.current = new XrpUsdTrader(key, secret);
-            botInstanceRef.current.initializeBuffer(klines1s);
-            addLog(`Bot initialized with ${klines1s.length} 1-second candles.`, 'info');
+            const tempBot = new XrpUsdTrader(key, secret);
+            setDailyTradeLimit(tempBot.getDailyTradeLimit());
+            tempBot.initializeBuffer(klines1s);
+            botInstanceRef.current = tempBot;
+            addLog(`Bot initialized with ${klines1s.length} pre-fetched candles.`, 'info');
 
         } catch (e) {
             const error = e instanceof Error ? e.message : String(e);
@@ -185,25 +196,28 @@ const App: React.FC = () => {
     }, [addLog, refreshPriceHistoryFromDB]);
         
     const handlePlay = () => {
-        if (!botInstanceRef.current) {
-            addLog('Cannot start live trading. Bot is not initialized. Connect to Binance first.', 'error');
+        if (!isBinanceConnected) {
+            addLog('Cannot start live trading. Connect to Binance first.', 'error');
             return;
         }
-        addLog(`Live trading analysis started. Ticking every ${TICK_INTERVAL / 1000} seconds.`, 'info');
-        setSimulationStatus('live');
-        setAnalysisLog([]); // Clear previous logs
+        addLog(`Starting live analysis... Ticking every ${TICK_INTERVAL / 1000}s.`, 'request');
+        setAnalysisLog([]);
         
-        runMainTick(); 
-        mainIntervalRef.current = window.setInterval(runMainTick, TICK_INTERVAL);
+        if (intervalRef.current) clearInterval(intervalRef.current);
+        runMainTick(); // Run once immediately
+        intervalRef.current = window.setInterval(runMainTick, TICK_INTERVAL);
+        setSimulationStatus('live');
     };
 
     const handleStop = () => {
-        if (mainIntervalRef.current) clearInterval(mainIntervalRef.current);
-        mainIntervalRef.current = null;
-        
-        addLog('Simulation stopped.', 'info');
+        addLog('Stopping analysis...', 'request');
+        if (intervalRef.current) {
+            clearInterval(intervalRef.current);
+            intervalRef.current = null;
+        }
         setSimulationStatus('stopped');
         setOpenTrades([]);
+        openTradesRef.current = []; // Reset ref as well
         setHeatScores(null);
         setLastUpdated(null);
         setLiveCandles([]);
@@ -257,8 +271,8 @@ const App: React.FC = () => {
                         )}
                         <HeatTracker
                             heatScores={heatScores}
-                            dailyTradeCount={botInstanceRef.current?.getDailyTradeCount() || 0}
-                            dailyTradeLimit={botInstanceRef.current?.getDailyTradeLimit() || 100}
+                            dailyTradeCount={dailyTradeCount}
+                            dailyTradeLimit={dailyTradeLimit}
                             lastUpdated={lastUpdated}
                         />
                         <OpenPositions openTrades={openTrades} closedTrades={closedTrades} />
